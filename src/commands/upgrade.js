@@ -216,7 +216,7 @@ module.exports = {
 
       const confirmEmbed = new EmbedBuilder()
         .setColor(0xf39c12)
-        .setTitle("⚠️ Confirmar Mejora")
+        .setTitle("⚠️ Confirmar Mejora de carta")
         .setDescription(
           `¿Estás seguro de que deseas mejorar **${pa.artworks.name}**?`,
         )
