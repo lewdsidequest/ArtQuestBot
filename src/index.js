@@ -1,3 +1,4 @@
+const express = require("express");
 const {
   Client,
   GatewayIntentBits,
@@ -8,6 +9,26 @@ const { loadCommands } = require("./utils/loader");
 const interactionCreate = require("./events/interactionCreate");
 require("dotenv").config();
 
+// ==========================================
+// CONFIGURACIÓN DEL SERVIDOR WEB (EXPRESS)
+// ==========================================
+const app = express();
+// Hostinger (o la plataforma en uso) inyectará el puerto aquí, si no, usa el 8000
+const port = process.env.PORT || 8000;
+
+app.get("/", (req, res) => {
+  res.send("El bot de Discord está en línea y funcionando.");
+});
+
+app.listen(port, () => {
+  console.log(
+    `[Web] Servidor de mantenimiento escuchando en el puerto ${port}`,
+  );
+});
+
+// ==========================================
+// CONFIGURACIÓN DEL BOT DE DISCORD
+// ==========================================
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
