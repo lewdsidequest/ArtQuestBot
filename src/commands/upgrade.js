@@ -220,6 +220,7 @@ module.exports = {
         .setDescription(
           `¿Estás seguro de que deseas mejorar **${pa.artworks.name}**?`,
         )
+        .setThumbnail(pa.artworks.sample_url || pa.artworks.image_url)
         .addFields(
           { name: "Mejora", value: upgradeType, inline: true },
           {
