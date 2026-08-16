@@ -1,0 +1,26 @@
+{
+  "name": "art-trading-bot",
+  "version": "1.0.0",
+  "description": "Discord Artwork Trading Bot - Incremental Gacha Collection Game",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "deploy": "node scripts/deploy-commands.js",
+    "lint": "eslint src/"
+  },
+  "keywords": ["discord", "bot", "artwork", "gacha", "trading", "incremental"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "@supabase/supabase-js": "^2.44.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "eslint": "^9.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
