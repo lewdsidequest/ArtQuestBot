@@ -84,7 +84,7 @@ module.exports = {
 
       const { data: pa } = await supabase
         .from("player_artworks")
-        .select("*, artworks(name, rarity_id)")
+        .select("*, artworks(name, rarity_id, image_url, sample_url)")
         .eq("id", paId)
         .eq("player_id", interaction.user.id)
         .single();
@@ -216,9 +216,9 @@ module.exports = {
 
       const confirmEmbed = new EmbedBuilder()
         .setColor(0xf39c12)
-        .setTitle("⚠️ Confirmar Mejora de carta")
+        .setTitle("⚠️ Confirmar Mejora de Carta")
         .setDescription(
-          `¿Estás seguro de que deseas mejorar **${pa.artworks.name}**?`,
+          `¿Seguro de que deseas mejorar **${pa.artworks.name}**?`,
         )
         .setThumbnail(pa.artworks.sample_url || pa.artworks.image_url)
         .addFields(
