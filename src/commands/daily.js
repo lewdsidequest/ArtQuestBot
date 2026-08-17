@@ -45,7 +45,9 @@ module.exports = {
         .maybeSingle();
 
       const config = configData?.value || {
+        min_daily_ink: 2500,
         ink_multiplier: 1.0,
+        min_daily_dust: 50,
         dust_multiplier: 1.0,
         jackpot_multiplier: 3.0,
         jackpot_chance: 0.05,
@@ -54,7 +56,7 @@ module.exports = {
       // 3. Ink$: Tasa de generación por hora * multiplicador (mínimo de 2500 Ink$)
       const hourlyInk = await economy.getInkRate(playerId);
       const baseInk = Math.max(
-        2500,
+        config.min_daily_ink,
         Math.floor(hourlyInk * config.ink_multiplier),
       );
 
@@ -66,7 +68,7 @@ module.exports = {
         .eq("artworks.status", "active");
 
       const baseDust = Math.max(
-        50,
+        config.min_daily_dust,
         Math.floor((totalCards || 0) * config.dust_multiplier),
       );
 
