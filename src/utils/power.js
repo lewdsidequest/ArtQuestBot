@@ -108,14 +108,27 @@ function calculateRefund(
   investedInk,
   investedDust,
   rarityId,
+  prestige = 0, // Añadimos el nivel de prestigio
   ecoConfig = null,
 ) {
   const refundPercent = parseFloat(ecoConfig?.refund_percentage ?? 0.5);
   const baseDust = calculateDustReward(rarityId, ecoConfig);
 
+  // NUEVA FÓRMULA DE POLVO POR PRESTIGIO
+  // Buscamos la variable configurable (default 0.5 = 50% extra por nivel)
+  const prestigeDustMult = parseFloat(
+    ecoConfig?.prestige_dust_multiplier ?? 0.5,
+  );
+
+  // Polvo Base + (Polvo Base * Multiplicador * Nivel de Prestigio)
+  const prestigeBonus =
+    prestige > 0 ? baseDust * prestigeDustMult * prestige : 0;
+  const finalBaseDust = Math.floor(baseDust + prestigeBonus);
+
   return {
     refundedInk: Math.floor((investedInk || 0) * refundPercent),
-    refundedDust: baseDust + Math.floor((investedDust || 0) * refundPercent),
+    refundedDust:
+      finalBaseDust + Math.floor((investedDust || 0) * refundPercent),
   };
 }
 

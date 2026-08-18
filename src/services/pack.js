@@ -316,6 +316,7 @@ class PackService {
       pa.invested_ink,
       pa.invested_dust,
       pa.artworks.rarity_id,
+      pa.prestige_level || 0,
       ecoConfig,
     );
 
@@ -386,6 +387,7 @@ class PackService {
           copy.invested_ink,
           copy.invested_dust,
           copy.artworks.rarity_id,
+          pa.prestige_level || 0,
           ecoConfig,
         );
 
@@ -444,6 +446,7 @@ class PackService {
         card.invested_ink,
         card.invested_dust,
         card.artworks.rarity_id,
+        pa.prestige_level || 0,
         ecoConfig,
       );
 

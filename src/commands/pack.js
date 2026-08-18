@@ -109,6 +109,7 @@ module.exports = {
             });
 
             let content = "";
+            content = `💳 **Has gastado:** ${cost.final} Ink$ | **Te quedan:** ${player.ink_dollars} Ink$`;
             if (result.isNewGlobal)
               content += "🌟 **¡Nuevo artwork descubierto globalmente!**\n";
             if (result.isNewPersonal)

@@ -9,6 +9,7 @@ const {
 } = require("discord.js");
 const economy = require("../services/economy");
 const packService = require("../services/pack");
+const ActionManager = require("../utils/ActionManager"); // 🛠️ IMPORTAMOS EL GESTOR
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -59,7 +60,6 @@ module.exports = {
       if (sub === "carta") {
         const paId = interaction.options.getInteger("id");
         try {
-          // Primero, obtenemos la información de la carta sin destruirla
           const { data: pa, error: paErr } = await supabase
             .from("player_artworks")
             .select("*, artworks(*)")
@@ -79,7 +79,6 @@ module.exports = {
             });
           }
 
-          // Simulamos el reembolso para mostrarlo
           const { data: configData } = await supabase
             .from("global_configs")
             .select("value")
@@ -91,10 +90,10 @@ module.exports = {
             pa.invested_ink,
             pa.invested_dust,
             pa.artworks.rarity_id,
+            pa.prestige_level || 0, // 🛠️ ACTUALIZADO
             ecoConfig,
           );
 
-          // Obtenemos nombre y emoji de la rareza
           const RarityManager = require("../utils/rarity");
           const rarityData = RarityManager.get(pa.artworks.rarity_id);
           const rarityDisplay = rarityData
@@ -107,7 +106,7 @@ module.exports = {
             .setDescription(
               `Estás a punto de convertir **${pa.artworks.name}** en polvo.\n*(Esta acción no se puede deshacer)*`,
             )
-            .setThumbnail(pa.artworks.sample_url || pa.artworks.image_url) // Usamos la miniatura o la imagen completa si no hay sample
+            .setThumbnail(pa.artworks.sample_url || pa.artworks.image_url)
             .addFields(
               {
                 name: "Estadísticas de Carta",
@@ -142,6 +141,7 @@ module.exports = {
             embeds: [confirmEmbed],
             components: [row],
           });
+
           const collector = msg.createMessageComponentCollector({
             componentType: ComponentType.Button,
             time: 60000,
@@ -149,25 +149,45 @@ module.exports = {
           });
 
           collector.on("collect", async (i) => {
-            if (i.customId === "cancel_single_destroy") {
-              const cancelEmbed = new EmbedBuilder()
-                .setColor(0x95a5a6)
-                .setTitle("🚫 Operación Cancelada")
-                .setDescription("Tu carta está a salvo.");
-              await i.update({ embeds: [cancelEmbed], components: [] });
-              collector.stop("cancelled");
-              return;
+            await i.deferUpdate(); // 🛠️ Acuse de recibo a Discord
+
+            // 🛠️ SISTEMA DE BLOQUEO (Anti-Spam)
+            if (!ActionManager.lockUser(i.user.id)) {
+              return i.followUp({
+                content: "⏳ Procesando tu acción, por favor espera...",
+                ephemeral: true,
+              });
             }
 
-            if (i.customId === "confirm_single_destroy") {
-              await i.deferUpdate();
-              try {
-                // Ahora sí ejecutamos la destrucción real
+            try {
+              // 🛠️ DESHABILITAR BOTONES VISUALMENTE
+              const disabledRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder(
+                  i.message.components[0].components[0].data,
+                ).setDisabled(true),
+                new ButtonBuilder(
+                  i.message.components[0].components[1].data,
+                ).setDisabled(true),
+              );
+              await interaction.editReply({ components: [disabledRow] });
+
+              if (i.customId === "cancel_single_destroy") {
+                const cancelEmbed = new EmbedBuilder()
+                  .setColor(0x95a5a6)
+                  .setTitle("🚫 Operación Cancelada")
+                  .setDescription("Tu carta está a salvo.");
+                await interaction.editReply({
+                  embeds: [cancelEmbed],
+                  components: [],
+                });
+                return collector.stop("cancelled");
+              }
+
+              if (i.customId === "confirm_single_destroy") {
                 const result = await packService.convertToDust(
                   interaction.user.id,
                   paId,
                 );
-
                 const successEmbed = new EmbedBuilder()
                   .setColor(0x2ecc71)
                   .setTitle("♻️ Artwork Destruido")
@@ -186,20 +206,21 @@ module.exports = {
                       inline: true,
                     },
                   );
-
                 await interaction.editReply({
                   embeds: [successEmbed],
                   components: [],
                 });
                 collector.stop("success");
-              } catch (error) {
-                await interaction.editReply({
-                  content: `❌ Error: ${error.message}`,
-                  embeds: [],
-                  components: [],
-                });
-                collector.stop("error");
               }
+            } catch (error) {
+              await interaction.editReply({
+                content: `❌ Error: ${error.message}`,
+                embeds: [],
+                components: [],
+              });
+              collector.stop("error");
+            } finally {
+              ActionManager.unlockUser(i.user.id); // 🛠️ LIBERAR CANDADO
             }
           });
 
@@ -281,19 +302,39 @@ module.exports = {
         });
 
         collector.on("collect", async (i) => {
-          if (i.customId === "cancel_mass_destroy") {
-            const cancelEmbed = new EmbedBuilder()
-              .setColor(0x95a5a6)
-              .setTitle("🚫 Operación Cancelada")
-              .setDescription("Tus duplicados están a salvo.");
-            await i.update({ embeds: [cancelEmbed], components: [] });
-            collector.stop("cancelled");
-            return;
+          await i.deferUpdate(); // 🛠️ Acuse de recibo a Discord
+
+          if (!ActionManager.lockUser(i.user.id)) {
+            return i.followUp({
+              content: "⏳ Procesando tu acción, por favor espera...",
+              ephemeral: true,
+            });
           }
 
-          if (i.customId === "confirm_mass_destroy") {
-            await i.deferUpdate();
-            try {
+          try {
+            const disabledRow = new ActionRowBuilder().addComponents(
+              new ButtonBuilder(
+                i.message.components[0].components[0].data,
+              ).setDisabled(true),
+              new ButtonBuilder(
+                i.message.components[0].components[1].data,
+              ).setDisabled(true),
+            );
+            await interaction.editReply({ components: [disabledRow] });
+
+            if (i.customId === "cancel_mass_destroy") {
+              const cancelEmbed = new EmbedBuilder()
+                .setColor(0x95a5a6)
+                .setTitle("🚫 Operación Cancelada")
+                .setDescription("Tus duplicados están a salvo.");
+              await interaction.editReply({
+                embeds: [cancelEmbed],
+                components: [],
+              });
+              return collector.stop("cancelled");
+            }
+
+            if (i.customId === "confirm_mass_destroy") {
               const result = await packService.executeMassDestroy(
                 interaction.user.id,
                 toDestroy,
@@ -318,20 +359,21 @@ module.exports = {
                     inline: true,
                   },
                 );
-
               await interaction.editReply({
                 embeds: [successEmbed],
                 components: [],
               });
               collector.stop("success");
-            } catch (error) {
-              await interaction.editReply({
-                content: `❌ Error durante la limpieza: ${error.message}`,
-                embeds: [],
-                components: [],
-              });
-              collector.stop("error");
             }
+          } catch (error) {
+            await interaction.editReply({
+              content: `❌ Error durante la limpieza: ${error.message}`,
+              embeds: [],
+              components: [],
+            });
+            collector.stop("error");
+          } finally {
+            ActionManager.unlockUser(i.user.id); // 🛠️ LIBERAR CANDADO
           }
         });
 
@@ -408,19 +450,39 @@ module.exports = {
         });
 
         collector.on("collect", async (i) => {
-          if (i.customId === "cancel_all_destroy") {
-            const cancelEmbed = new EmbedBuilder()
-              .setColor(0x95a5a6)
-              .setTitle("🚫 Operación Cancelada")
-              .setDescription("Tu inventario permanece intacto.");
-            await i.update({ embeds: [cancelEmbed], components: [] });
-            collector.stop("cancelled");
-            return;
+          await i.deferUpdate(); // 🛠️ Acuse de recibo a Discord
+
+          if (!ActionManager.lockUser(i.user.id)) {
+            return i.followUp({
+              content: "⏳ Procesando tu acción, por favor espera...",
+              ephemeral: true,
+            });
           }
 
-          if (i.customId === "confirm_all_destroy") {
-            await i.deferUpdate();
-            try {
+          try {
+            const disabledRow = new ActionRowBuilder().addComponents(
+              new ButtonBuilder(
+                i.message.components[0].components[0].data,
+              ).setDisabled(true),
+              new ButtonBuilder(
+                i.message.components[0].components[1].data,
+              ).setDisabled(true),
+            );
+            await interaction.editReply({ components: [disabledRow] });
+
+            if (i.customId === "cancel_all_destroy") {
+              const cancelEmbed = new EmbedBuilder()
+                .setColor(0x95a5a6)
+                .setTitle("🚫 Operación Cancelada")
+                .setDescription("Tu inventario permanece intacto.");
+              await interaction.editReply({
+                embeds: [cancelEmbed],
+                components: [],
+              });
+              return collector.stop("cancelled");
+            }
+
+            if (i.customId === "confirm_all_destroy") {
               const result = await packService.executeMassDestroy(
                 interaction.user.id,
                 toDestroy,
@@ -445,20 +507,21 @@ module.exports = {
                     inline: true,
                   },
                 );
-
               await interaction.editReply({
                 embeds: [successEmbed],
                 components: [],
               });
               collector.stop("success");
-            } catch (error) {
-              await interaction.editReply({
-                content: `❌ Error durante la purga: ${error.message}`,
-                embeds: [],
-                components: [],
-              });
-              collector.stop("error");
             }
+          } catch (error) {
+            await interaction.editReply({
+              content: `❌ Error durante la purga: ${error.message}`,
+              embeds: [],
+              components: [],
+            });
+            collector.stop("error");
+          } finally {
+            ActionManager.unlockUser(i.user.id); // 🛠️ LIBERAR CANDADO
           }
         });
 

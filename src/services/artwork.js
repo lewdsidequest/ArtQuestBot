@@ -37,6 +37,10 @@ class ArtworkService {
       (await this.getCollectionName(collectionId)) || "Art";
     const name = `${collectionName} Art #${String(nextNum).padStart(4, "0")}`;
 
+    // 🛠️ ACTUALIZACIÓN: Detección de formato multimedia
+    const isVideo = imageUrl ? /\.(mp4|webm)$/i.test(imageUrl) : false;
+    const isGif = imageUrl ? /\.(gif)$/i.test(imageUrl) : false;
+
     const { data, error } = await supabase
       .from("artworks")
       .insert({
@@ -52,6 +56,8 @@ class ArtworkService {
         rarity_id,
         discovered_by: discovererId,
         status: "active",
+        is_video: isVideo,
+        is_gif: isGif,
       })
       .select()
       .single();
@@ -178,13 +184,11 @@ class ArtworkService {
     let currentCount = 0;
 
     if (!report) {
-      const { error } = await supabase
-        .from("artwork_reports")
-        .insert({
-          artwork_id: artworkId,
-          reported_by_users: [strPlayerId],
-          report_count: 1,
-        });
+      const { error } = await supabase.from("artwork_reports").insert({
+        artwork_id: artworkId,
+        reported_by_users: [strPlayerId],
+        report_count: 1,
+      });
       if (error)
         throw new Error("No se pudo enviar el reporte a la base de datos.");
       currentCount = 1;
