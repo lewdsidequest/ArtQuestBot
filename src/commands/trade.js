@@ -10,6 +10,7 @@ const {
 const economy = require("../services/economy");
 const tradeService = require("../services/trade");
 const { formatCardText } = require("../utils/cardFormat");
+const ActionManager = require("../utils/ActionManager"); // 🛠️ GESTOR ANTI-SPAM
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -64,10 +65,16 @@ module.exports = {
         );
 
       const embedColor = 0x9b59b6;
-
-      // 🛠️ Aplicamos el formateador detallado
       const senderDesc = formatCardText(senderCard, "detailed");
       const receiverDesc = formatCardText(receiverCard, "detailed");
+
+      // 🛠️ LÓGICA DE GIF PARA AMBAS CARTAS
+      const senderIsGif =
+        senderCard.artworks.is_gif ??
+        /\.(gif)$/i.test(senderCard.artworks.image_url);
+      const receiverIsGif =
+        receiverCard.artworks.is_gif ??
+        /\.(gif)$/i.test(receiverCard.artworks.image_url);
 
       const embedSender = new EmbedBuilder()
         .setColor(embedColor)
@@ -75,9 +82,10 @@ module.exports = {
         .setDescription(
           `**${interaction.user.username}** le ofrece a **${targetUser.username}** un intercambio.\n\n📤 **De ${interaction.user.username}:**\n${senderDesc}`,
         )
-        // Solución para los videos: Priorizamos sample_url
         .setImage(
-          senderCard.artworks.sample_url || senderCard.artworks.image_url,
+          senderIsGif
+            ? senderCard.artworks.image_url
+            : senderCard.artworks.sample_url || senderCard.artworks.image_url,
         );
 
       const embedReceiver = new EmbedBuilder()
@@ -85,9 +93,11 @@ module.exports = {
         .setDescription(
           `📥 **A cambio de la carta de ${targetUser.username}:**\n${receiverDesc}`,
         )
-        // Solución para los videos: Priorizamos sample_url
         .setImage(
-          receiverCard.artworks.sample_url || receiverCard.artworks.image_url,
+          receiverIsGif
+            ? receiverCard.artworks.image_url
+            : receiverCard.artworks.sample_url ||
+                receiverCard.artworks.image_url,
         );
 
       const row = new ActionRowBuilder().addComponents(
@@ -125,67 +135,98 @@ module.exports = {
           });
         }
 
-        // --- RECHAZAR ---
-        if (i.customId === "btn_decline") {
-          await i.deferUpdate();
-          await tradeService.cancelTrade(trade.id);
-
-          const declineSummary = new EmbedBuilder()
-            .setColor(0xe74c3c)
-            .setTitle("🚫 Intercambio Cancelado")
-            .setDescription(
-              `La oferta fue rechazada por **${i.user.username}**.`,
-            );
-
-          await interaction.editReply({
-            content: "",
-            embeds: [declineSummary],
-            components: [],
+        // 🛠️ BLOQUEO ANTI-SPAM (Para ambas partes)
+        if (!ActionManager.lockUser(i.user.id)) {
+          return i.reply({
+            content: "⏳ Procesando respuesta...",
+            flags: MessageFlags.Ephemeral,
           });
-          collector.stop("declined");
-          return;
         }
 
-        // --- ACEPTAR ---
-        if (i.customId === "btn_accept") {
-          if (!isReceiver) {
-            return i.reply({
-              content: "Solo el usuario que recibe la oferta puede aceptarla.",
-              flags: MessageFlags.Ephemeral,
-            });
-          }
+        try {
+          // --- RECHAZAR ---
+          if (i.customId === "btn_decline") {
+            await i.deferUpdate();
 
-          await i.deferUpdate();
-
-          try {
-            await tradeService.execute1v1Trade(
-              trade.id,
-              interaction.user.id,
-              targetUser.id,
+            const disabledRow = new ActionRowBuilder().addComponents(
+              ButtonBuilder.from(
+                i.message.components[0].components[0],
+              ).setDisabled(true),
+              ButtonBuilder.from(
+                i.message.components[0].components[1],
+              ).setDisabled(true),
             );
+            await interaction.editReply({ components: [disabledRow] });
 
-            const successSummary = new EmbedBuilder()
-              .setColor(0x2ecc71)
-              .setTitle("✅ ¡Intercambio Completado!")
+            await tradeService.cancelTrade(trade.id);
+            const declineSummary = new EmbedBuilder()
+              .setColor(0xe74c3c)
+              .setTitle("🚫 Intercambio Cancelado")
               .setDescription(
-                `**${interaction.user.username}** recibió: **${receiverCard.artworks.name}**\n**${targetUser.username}** recibió: **${senderCard.artworks.name}**`,
+                `La oferta fue rechazada por **${i.user.username}**.`,
               );
 
             await interaction.editReply({
               content: "",
-              embeds: [successSummary],
+              embeds: [declineSummary],
               components: [],
             });
-            collector.stop("accepted");
-          } catch (error) {
-            await interaction.editReply({
-              content: `❌ El intercambio falló: ${error.message}`,
-              components: [],
-              embeds: [],
-            });
-            collector.stop("error");
+            collector.stop("declined");
+            return;
           }
-          return;
+
+          // --- ACEPTAR ---
+          if (i.customId === "btn_accept") {
+            if (!isReceiver) {
+              return i.reply({
+                content:
+                  "Solo el usuario que recibe la oferta puede aceptarla.",
+                flags: MessageFlags.Ephemeral,
+              });
+            }
+
+            await i.deferUpdate();
+
+            const disabledRow = new ActionRowBuilder().addComponents(
+              ButtonBuilder.from(
+                i.message.components[0].components[0],
+              ).setDisabled(true),
+              ButtonBuilder.from(
+                i.message.components[0].components[1],
+              ).setDisabled(true),
+            );
+            await interaction.editReply({ components: [disabledRow] });
+
+            try {
+              await tradeService.execute1v1Trade(
+                trade.id,
+                interaction.user.id,
+                targetUser.id,
+              );
+              const successSummary = new EmbedBuilder()
+                .setColor(0x2ecc71)
+                .setTitle("✅ ¡Intercambio Completado!")
+                .setDescription(
+                  `**${interaction.user.username}** recibió: **${receiverCard.artworks.name}**\n**${targetUser.username}** recibió: **${senderCard.artworks.name}**`,
+                );
+
+              await interaction.editReply({
+                content: "",
+                embeds: [successSummary],
+                components: [],
+              });
+              collector.stop("accepted");
+            } catch (error) {
+              await interaction.editReply({
+                content: `❌ El intercambio falló: ${error.message}`,
+                components: [],
+                embeds: [],
+              });
+              collector.stop("error");
+            }
+          }
+        } finally {
+          ActionManager.unlockUser(i.user.id);
         }
       });
 

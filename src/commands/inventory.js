@@ -8,6 +8,7 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  MessageFlags,
 } = require("discord.js");
 const economy = require("../services/economy");
 const gallery = require("../services/gallery");
@@ -302,7 +303,7 @@ module.exports = {
             if (isNaN(reqPage) || reqPage < 1 || reqPage > totalPages) {
               await submitted.reply({
                 content: `❌ Página inválida. Debe ser un número entre 1 y ${totalPages}.`,
-                ephemeral: true,
+                flags: MessageFlags.Ephemeral,
               });
               return;
             }
@@ -310,7 +311,7 @@ module.exports = {
             if (!ActionManager.lockUser(submitted.user.id)) {
               await submitted.reply({
                 content: "⏳ Procesando tu acción, por favor espera...",
-                ephemeral: true,
+                flags: MessageFlags.Ephemeral,
               });
               return;
             }
@@ -336,7 +337,7 @@ module.exports = {
         if (!ActionManager.lockUser(i.user.id)) {
           return i.followUp({
             content: "⏳ Procesando tu acción, por favor espera...",
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
         }
 

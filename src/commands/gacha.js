@@ -5,10 +5,12 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
+  MessageFlags,
 } = require("discord.js");
 const gamblingService = require("../services/gambling");
 const economy = require("../services/economy");
 const RarityManager = require("../utils/rarity");
+const ActionManager = require("../utils/ActionManager"); // 🛠️ GESTOR ANTI-SPAM
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -44,9 +46,6 @@ module.exports = {
       );
       const costFormatted = machine.max_bet.toLocaleString();
 
-      // ==========================================
-      // ESTADO INICIAL (Información del Banner)
-      // ==========================================
       const initEmbed = new EmbedBuilder()
         .setColor(0x9b59b6)
         .setTitle(`🔮 ${machine.name}`)
@@ -80,14 +79,25 @@ module.exports = {
         filter: (i) => i.user.id === interaction.user.id,
       });
 
-      // ==========================================
-      // LÓGICA DE TIRADA
-      // ==========================================
       collector.on("collect", async (i) => {
         if (i.customId === "gacha_pull") {
-          await i.deferUpdate();
+          if (!ActionManager.lockUser(interaction.user.id)) {
+            return i.reply({
+              content: "⏳ Abriendo cápsula...",
+              flags: MessageFlags.Ephemeral,
+            });
+          }
 
           try {
+            await i.deferUpdate();
+
+            const disabledRow = new ActionRowBuilder().addComponents(
+              new ButtonBuilder(
+                i.message.components[0].components[0].data,
+              ).setDisabled(true),
+            );
+            await interaction.editReply({ components: [disabledRow] });
+
             const currentP = await economy.getPlayer(interaction.user.id);
             if (currentP.ink_dollars < machine.max_bet) {
               await i.editReply({
@@ -114,19 +124,18 @@ module.exports = {
             if (machine.config?.thumbnail_url)
               pullEmbed.setThumbnail(machine.config.thumbnail_url);
 
-            // 🎨 Lógica de Color de Cápsula
-            let capsuleEmoji = "⚪"; // Nada / Consuelo menor
+            let capsuleEmoji = "⚪";
             if (result.isJackpot) {
-              capsuleEmoji = "💖"; // Carta Exclusiva
+              capsuleEmoji = "💖";
               pullEmbed.setColor(0xff1493);
             } else if (result.inkWinnings > machine.max_bet) {
-              capsuleEmoji = "🟡"; // Ganancia de dinero buena
+              capsuleEmoji = "🟡";
               pullEmbed.setColor(0xf1c40f);
             } else if (result.inkWinnings > machine.max_bet * 0.5) {
-              capsuleEmoji = "🔵"; // Recuperó algo de dinero
+              capsuleEmoji = "🔵";
               pullEmbed.setColor(0x3498db);
             } else {
-              pullEmbed.setColor(0x95a5a6); // Nada
+              pullEmbed.setColor(0x95a5a6);
             }
 
             let desc = `💳 **Saldo Actual:** **${newBal} Ink$**\n\n`;
@@ -138,11 +147,9 @@ module.exports = {
               desc += `💨 La cápsula estaba vacía. ¡Suerte a la próxima!\n`;
             }
 
-            // 🎯 LÓGICA DE JACKPOT
             if (result.isJackpot && result.cardWon) {
               desc += `\n🎉 **¡¡OBTUVISTE UNA CARTA EXCLUSIVA!!** 🎉\n`;
 
-              // Traducir el rarity_id a texto visual
               const rarityData = RarityManager.get(result.cardWon.rarity_id);
               const rarityDisplay = rarityData
                 ? `${rarityData.name} ${rarityData.emoji}`
@@ -153,18 +160,20 @@ module.exports = {
               if (result.isDuplicate) {
                 desc += `🔁 *(Es un duplicado, se ha guardado en tu inventario)*\n`;
               }
-
               desc += `\n🔍 Usa \`/view ID:${result.cardWonPaId}\` para verla a detalle.`;
 
-              // Reemplazar miniatura por la imagen estática real de la carta ganada
+              // 🛠️ LÓGICA DE GIF APLICADA A GACHA
+              const isGif =
+                result.cardWon.is_gif ??
+                /\.(gif)$/i.test(result.cardWon.image_url);
               pullEmbed.setThumbnail(null);
               pullEmbed.setImage(
-                result.cardWon.sample_url || result.cardWon.image_url,
+                isGif
+                  ? result.cardWon.image_url
+                  : result.cardWon.sample_url || result.cardWon.image_url,
               );
 
               pullEmbed.setDescription(desc);
-
-              // ⛔ Retiramos los botones para forzar al jugador a apreciar el jackpot (o invocar un nuevo comando)
               await i.editReply({ embeds: [pullEmbed], components: [] });
               collector.stop("jackpot");
               return;
@@ -179,6 +188,8 @@ module.exports = {
               components: [],
             });
             collector.stop("error");
+          } finally {
+            ActionManager.unlockUser(interaction.user.id);
           }
         }
       });
@@ -197,11 +208,9 @@ module.exports = {
     try {
       const focused = interaction.options.getFocused();
       const machines = await gamblingService.getActiveMachines("gacha");
-
       const filtered = machines
         .filter((m) => m.name.toLowerCase().includes(focused.toLowerCase()))
         .slice(0, 25);
-
       await interaction.respond(
         filtered.map((m) => ({ name: m.name, value: m.id })),
       );

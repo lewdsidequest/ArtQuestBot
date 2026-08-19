@@ -4,11 +4,13 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
+  MessageFlags,
 } = require("discord.js");
 const economy = require("../services/economy");
 const artworkService = require("../services/artwork");
 const packService = require("../services/pack");
 const { buildPackEmbed, buildArtworkEmbed } = require("../utils/embeds");
+const ActionManager = require("../utils/ActionManager"); // 🛠️ GESTOR ANTI-SPAM
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -78,6 +80,7 @@ module.exports = {
       let isPackOpened = false;
 
       collector.on("collect", async (i) => {
+        // --- BOTÓN CANCELAR ---
         if (i.customId === "pack_cancel") {
           await i.update({
             content: "🚫 Sobre cancelado. No se te ha cobrado nada.",
@@ -88,11 +91,29 @@ module.exports = {
           return;
         }
 
+        // --- BOTÓN ABRIR SOBRE ---
         if (i.customId === `pack_open_${collectionSlug}`) {
-          isPackOpened = true;
-          await i.deferUpdate();
+          if (!ActionManager.lockUser(i.user.id)) {
+            return i.reply({
+              content: "⏳ Abriendo tu sobre, por favor espera...",
+              flags: MessageFlags.ephemeral,
+            });
+          }
 
           try {
+            // 🛠️ Apagamos los botones al instante para evitar doble clic
+            const disabledRow = new ActionRowBuilder().addComponents(
+              ButtonBuilder.from(
+                i.message.components[0].components[0],
+              ).setDisabled(true),
+              ButtonBuilder.from(
+                i.message.components[0].components[1],
+              ).setDisabled(true),
+            );
+            await i.update({ components: [disabledRow] });
+
+            isPackOpened = true; // Confirmamos intención antes de procesar
+
             const result = await packService.openPack(
               interaction.user.id,
               collectionSlug,
@@ -108,8 +129,7 @@ module.exports = {
               showVideoText: true,
             });
 
-            let content = "";
-            content = `💳 **Has gastado:** ${cost.final} Ink$ | **Te quedan:** ${player.ink_dollars} Ink$`;
+            let content = `💳 **Has gastado:** ${cost.final} Ink$ | **Te quedan:** ${player.ink_dollars - cost.final} Ink$\n`;
             if (result.isNewGlobal)
               content += "🌟 **¡Nuevo artwork descubierto globalmente!**\n";
             if (result.isNewPersonal)
@@ -135,13 +155,15 @@ module.exports = {
                 .setEmoji("♻️"),
             );
 
+            // 🛠️ Detección de Video Optimizada
+            const art = result.artwork;
             const isVideo =
-              result.artwork.image_url &&
-              result.artwork.image_url.match(/\.(mp4|webm)$/i);
+              art.is_video ?? /\.(mp4|webm)$/i.test(art.image_url);
+
             if (isVideo) {
               actionRow.addComponents(
                 new ButtonBuilder()
-                  .setCustomId(`pack_video_${result.artwork.id}`)
+                  .setCustomId(`pack_video_${art.id}`)
                   .setLabel("Ver Video")
                   .setStyle(ButtonStyle.Primary)
                   .setEmoji("▶️"),
@@ -150,7 +172,7 @@ module.exports = {
 
             actionRow.addComponents(
               new ButtonBuilder()
-                .setCustomId(`report_art_${result.artwork.id}`)
+                .setCustomId(`report_art_${art.id}`)
                 .setLabel("Reportar")
                 .setStyle(ButtonStyle.Secondary)
                 .setEmoji("🚨"),
@@ -168,6 +190,8 @@ module.exports = {
               components: [],
             });
             collector.stop("error");
+          } finally {
+            ActionManager.unlockUser(i.user.id);
           }
           return;
         }
@@ -195,8 +219,7 @@ module.exports = {
 
         // --- BOTÓN CONSERVAR ---
         if (i.customId.startsWith("keep_art_")) {
-          await i.deferUpdate();
-          await i.editReply({
+          await i.update({
             content:
               i.message.content +
               "\n✅ **¡Artwork guardado exitosamente en tu inventario!**",
@@ -208,8 +231,23 @@ module.exports = {
 
         // --- BOTÓN CONVERTIR A POLVO ---
         if (i.customId.startsWith("dust_art_")) {
-          await i.deferUpdate();
+          if (!ActionManager.lockUser(i.user.id)) {
+            return i.reply({
+              content: "⏳ Convirtiendo a polvo...",
+              flags: MessageFlags.Ephemeral,
+            });
+          }
+
           try {
+            // Apagamos botones
+            const disabledRow = new ActionRowBuilder();
+            i.message.components[0].components.forEach((btn) =>
+              disabledRow.addComponents(
+                ButtonBuilder.from(btn).setDisabled(true),
+              ),
+            );
+            await i.update({ components: [disabledRow] });
+
             const paId = i.customId.split("dust_art_")[1];
             const res = await packService.convertToDust(
               interaction.user.id,
@@ -222,19 +260,22 @@ module.exports = {
                 `\n✨ **¡Carta convertida a polvo!** Obtuviste +**${res.dustReward} Polvos de Estrella🌟**`,
               components: [],
             });
+            collector.stop("action_taken");
           } catch (err) {
             await i.editReply({
               content: `❌ Error: ${err.message}`,
               components: [],
             });
+            collector.stop("error");
+          } finally {
+            ActionManager.unlockUser(i.user.id);
           }
-          collector.stop("action_taken");
           return;
         }
 
         // --- BOTÓN REPORTAR ---
         if (i.customId.startsWith("report_art_")) {
-          await i.deferReply({ ephemeral: true });
+          await i.deferReply({ flags: MessageFlags.Ephemeral });
           try {
             const artId = i.customId.split("report_art_")[1];
             const rep = await artworkService.reportArtwork(
@@ -299,7 +340,6 @@ module.exports = {
           : false;
         return matchesName || matchesSlug || matchesTags;
       })
-      // ORDENAMIENTO POR PRECIO: De menor a mayor
       .sort((a, b) => {
         const costA = packService.calculatePackCost(a).final;
         const costB = packService.calculatePackCost(b).final;

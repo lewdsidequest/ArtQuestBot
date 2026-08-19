@@ -8,9 +8,11 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  MessageFlags,
 } = require("discord.js");
 const gamblingService = require("../services/gambling");
 const economy = require("../services/economy");
+const ActionManager = require("../utils/ActionManager"); // 🛠️ GESTOR ANTI-SPAM
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -38,16 +40,12 @@ module.exports = {
         });
       }
 
-      // Configuración de apuestas persistente en la sesión
       const minBet = machine.config?.min_bet || 10;
       const maxBet = machine.max_bet;
       let currentBet = machine.config?.default_bet || Math.floor(maxBet / 2);
       const isDust = machine.machine_type === "dust_slots";
       const currency = isDust ? "🌟 Polvo" : "💰 Ink$";
 
-      // ==========================================
-      // FUNCIÓN: CONSTRUIR EMBED INICIAL
-      // ==========================================
       const buildInitEmbed = async (playerId) => {
         const player = await economy.getPlayer(playerId);
         const bal = isDust ? player.star_dust : player.ink_dollars;
@@ -68,9 +66,6 @@ module.exports = {
         return embed;
       };
 
-      // ==========================================
-      // ESTADO INICIAL
-      // ==========================================
       const initEmbed = await buildInitEmbed(interaction.user.id);
 
       const buildRow = () => {
@@ -93,9 +88,6 @@ module.exports = {
         components: [buildRow()],
       });
 
-      // ==========================================
-      // COLECTOR DE BOTONES Y MODALES
-      // ==========================================
       const collector = msg.createMessageComponentCollector({
         componentType: ComponentType.Button,
         time: 120000,
@@ -103,7 +95,7 @@ module.exports = {
       });
 
       collector.on("collect", async (i) => {
-        // --- CAMBIAR APUESTA (MODAL) ---
+        // --- CAMBIAR APUESTA ---
         if (i.customId === "gamble_change_bet") {
           const modal = new ModalBuilder()
             .setCustomId("modal_change_bet")
@@ -127,35 +119,61 @@ module.exports = {
                 m.customId === "modal_change_bet",
             });
 
-            const newVal = parseInt(
-              submitted.fields.getTextInputValue("input_bet_amount"),
-            );
-
-            if (isNaN(newVal) || newVal < minBet || newVal > maxBet) {
-              await submitted.reply({
-                content: `❌ Cantidad inválida. Debe estar entre **${minBet.toLocaleString()}** y **${maxBet.toLocaleString()}**.`,
-                ephemeral: true,
+            if (!ActionManager.lockUser(interaction.user.id)) {
+              return submitted.reply({
+                content: "⏳ Procesando, espera...",
+                flags: MessageFlags.Ephemeral,
               });
-            } else {
-              currentBet = newVal;
-              const newInitEmbed = await buildInitEmbed(interaction.user.id);
-              await submitted.update({
-                embeds: [newInitEmbed],
-                components: [buildRow()],
-              });
-              collector.resetTimer();
             }
-          } catch (e) {
-            // Modal expiró, no hacemos nada
-          }
+
+            try {
+              const newVal = parseInt(
+                submitted.fields.getTextInputValue("input_bet_amount"),
+              );
+              if (isNaN(newVal) || newVal < minBet || newVal > maxBet) {
+                await submitted.reply({
+                  content: `❌ Cantidad inválida. Debe estar entre **${minBet.toLocaleString()}** y **${maxBet.toLocaleString()}**.`,
+                  flags: MessageFlags.Ephemeral,
+                });
+              } else {
+                currentBet = newVal;
+                const newInitEmbed = await buildInitEmbed(interaction.user.id);
+                await submitted.update({
+                  embeds: [newInitEmbed],
+                  components: [buildRow()],
+                });
+                collector.resetTimer();
+              }
+            } finally {
+              ActionManager.unlockUser(interaction.user.id);
+            }
+          } catch (e) {}
           return;
         }
 
         // --- APOSTAR (SPIN) ---
         if (i.customId === "gamble_spin") {
-          await i.deferUpdate();
+          if (!ActionManager.lockUser(interaction.user.id)) {
+            return i.reply({
+              content: "⏳ La máquina está girando...",
+              flags: MessageFlags.Ephemeral,
+            });
+          }
 
           try {
+            await i.deferUpdate();
+
+            // 🛠️ Desactivar botones temporalmente
+            const disabledRow = new ActionRowBuilder().addComponents(
+              new ButtonBuilder(
+                i.message.components[0].components[0].data,
+              ).setDisabled(true),
+              new ButtonBuilder(
+                i.message.components[0].components[1].data,
+              ).setDisabled(true),
+            );
+            await interaction.editReply({ components: [disabledRow] });
+
             const result = await gamblingService.playSlots(
               interaction.user.id,
               machine,
@@ -176,7 +194,6 @@ module.exports = {
                 : 0xe74c3c,
             );
 
-            // Generador simple de emojis para slots
             const emojis = ["🍒", "🍋", "🔔", "💎", "🎰"];
             const e1 = emojis[Math.floor(Math.random() * emojis.length)];
             const e2 =
@@ -208,7 +225,6 @@ module.exports = {
 
             spinEmbed.setDescription(desc);
 
-            // 🎯 LÓGICA DE JACKPOT
             if (result.isJackpot && machine.config?.jackpot_image_url) {
               spinEmbed.setThumbnail(null);
               spinEmbed.setImage(machine.config.jackpot_image_url);
@@ -217,19 +233,21 @@ module.exports = {
               return;
             }
 
+            // Mantenemos la botonera activa para volver a jugar
             await i.editReply({
               embeds: [spinEmbed],
               components: [buildRow()],
             });
             collector.resetTimer();
           } catch (e) {
-            // Si no tiene dinero u ocurre un error, avisamos pero MANTENEMOS la botonera
-            // para que pueda usar el botón "Cambiar Apuesta" y bajarla.
             await interaction.followUp({
               content: `❌ ${e.message}`,
-              ephemeral: true,
+              flags: MessageFlags.Ephemeral,
             });
+            await interaction.editReply({ components: [buildRow()] }); // Restaura botones
             collector.resetTimer();
+          } finally {
+            ActionManager.unlockUser(interaction.user.id);
           }
         }
       });
@@ -248,11 +266,9 @@ module.exports = {
     try {
       const focused = interaction.options.getFocused();
       const machines = await gamblingService.getActiveMachines("slots");
-
       const filtered = machines
         .filter((m) => m.name.toLowerCase().includes(focused.toLowerCase()))
         .slice(0, 25);
-
       await interaction.respond(
         filtered.map((m) => ({ name: m.name, value: m.id })),
       );
