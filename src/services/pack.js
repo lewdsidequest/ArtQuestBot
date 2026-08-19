@@ -483,20 +483,41 @@ class PackService {
     return { newDust, newInk };
   }
 
-  async toggleFavorite(playerId, playerArtworkId) {
-    const { data: pa } = await supabase
+  // Reemplaza toggleFavorite con esta nueva función:
+  async setFavorites(playerId, artworkIds, isFavorite) {
+    if (!artworkIds || artworkIds.length === 0)
+      throw new Error("Debes proporcionar al menos un ID válido.");
+
+    // Traemos las cartas y el JOIN con artworks(*) para que el formatCardText funcione
+    const { data: ownedCards, error: fetchErr } = await supabase
       .from("player_artworks")
-      .select("is_favorite")
-      .eq("id", playerArtworkId)
-      .eq("player_id", playerId)
-      .single();
-    if (!pa) throw new Error("Artwork no encontrado");
-    const { error } = await supabase
+      .select("*, artworks(*)")
+      .in("id", artworkIds)
+      .eq("player_id", playerId);
+
+    if (fetchErr)
+      throw new Error("Error al buscar las cartas en la base de datos.");
+
+    if (!ownedCards || ownedCards.length === 0) {
+      throw new Error(
+        "No se encontraron cartas válidas con esos IDs en tu inventario.",
+      );
+    }
+
+    const validIds = ownedCards.map((c) => c.id);
+
+    // Actualizamos masivamente
+    const { error: updErr } = await supabase
       .from("player_artworks")
-      .update({ is_favorite: !pa.is_favorite })
-      .eq("id", playerArtworkId);
-    if (error) throw new Error("Error al cambiar favorito");
-    return !pa.is_favorite;
+      .update({ is_favorite: isFavorite })
+      .in("id", validIds)
+      .eq("player_id", playerId);
+
+    if (updErr)
+      throw new Error("Error al actualizar los favoritos en la base de datos.");
+
+    // Inyectamos el nuevo estado en memoria para que el formato se muestre correcto
+    return ownedCards.map((c) => ({ ...c, is_favorite: isFavorite }));
   }
 }
 
