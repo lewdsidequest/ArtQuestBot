@@ -12,7 +12,14 @@ const {
 const economy = require("../services/economy");
 const gallery = require("../services/gallery");
 const { buildArtworkEmbed } = require("../utils/embeds");
-const { formatCardText } = require("../utils/cardFormat"); // 🛠️ Importamos el formateador
+const { formatCardText } = require("../utils/cardFormat");
+const ActionManager = require("../utils/ActionManager"); // 🛠️ Importamos el gestor anti-spam
+
+// 🛠️ Helper para seleccionar la URL correcta según si es GIF o imagen/video
+const getCardImageUrl = (art) => {
+  const isGif = art.is_gif ?? /\.(gif)$/i.test(art.image_url);
+  return isGif ? art.image_url : art.sample_url || art.image_url;
+};
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -123,7 +130,6 @@ module.exports = {
           );
         }
 
-        // 🛠️ Botón de salto SOLO si hay más de 2 páginas en total
         if (maxPages > 2) {
           row.addComponents(
             new ButtonBuilder()
@@ -171,10 +177,9 @@ module.exports = {
 
       const renderContent = (pageItems, page, maxPages, totalItems) => {
         const payload = { content: "", embeds: [], components: [] };
-        const startIndex = (page - 1) * perPage; // 🛠️ Para enumeración absoluta
+        const startIndex = (page - 1) * perPage;
 
         if (sub === "list") {
-          // 🛠️ Aplicamos el formato Detailed
           const desc = pageItems
             .map((item, idx) =>
               formatCardText(item, "detailed", startIndex + idx + 1),
@@ -193,22 +198,30 @@ module.exports = {
           payload.embeds.push(embed);
         } else if (sub === "view") {
           const item = pageItems[0];
-          const isVid =
-            item.artworks?.image_url &&
-            item.artworks.image_url.match(/\.(mp4|webm)$/i);
+          const art = item.artworks;
+          const isVid = art.is_video ?? /\.(mp4|webm)$/i.test(art.image_url);
+          const isGif = art.is_gif ?? /\.(gif)$/i.test(art.image_url);
 
-          const embed = buildArtworkEmbed(item.artworks, {
+          const embed = buildArtworkEmbed(art, {
             playerArtwork: item,
             ownerUsername: targetUser.username,
-            collectionName: item.artworks.collections?.name || "Desconocida",
+            collectionName: art.collections?.name || "Desconocida",
             showVideoText: isVid ? true : false,
           });
 
+          // 🛠️ Ajuste de URL si es GIF animado
+          if (isGif) {
+            embed.setImage(art.image_url);
+          }
+
+          let counterText = `📦 **Carta ${page} de ${maxPages}** — (${totalItems} en total) | Orden: ${sortBy}`;
+          if (isGif)
+            counterText +=
+              "\n*💡 Nota: Los GIFs pueden tardar unos segundos en cargar.*";
+
           const counterEmbed = new EmbedBuilder()
             .setColor(0x2b2d31)
-            .setDescription(
-              `📦 **Carta ${page} de ${maxPages}** — (${totalItems} en total) | Orden: ${sortBy}`,
-            );
+            .setDescription(counterText);
 
           payload.embeds.push(embed, counterEmbed);
           payload.components.push(
@@ -217,8 +230,6 @@ module.exports = {
           return payload;
         } else if (sub === "binder") {
           const fakeUrl = `https://discord.com/binder/${targetUser.id}/${page}`;
-
-          // 🛠️ Aplicamos el formato Intermediate con enumeración
           const desc = pageItems
             .map((item, idx) =>
               formatCardText(item, "intermediate", startIndex + idx + 1),
@@ -232,20 +243,14 @@ module.exports = {
               `**Página ${page}/${maxPages}** | Orden: ${sortBy}\n\n${desc}`,
             )
             .setURL(fakeUrl)
-            .setImage(
-              pageItems[0].artworks.sample_url ||
-                pageItems[0].artworks.image_url,
-            );
+            .setImage(getCardImageUrl(pageItems[0].artworks));
 
           payload.embeds.push(mainEmbed);
 
           for (let idx = 1; idx < pageItems.length; idx++) {
             const extraEmbed = new EmbedBuilder()
               .setURL(fakeUrl)
-              .setImage(
-                pageItems[idx].artworks.sample_url ||
-                  pageItems[idx].artworks.image_url,
-              );
+              .setImage(getCardImageUrl(pageItems[idx].artworks));
             payload.embeds.push(extraEmbed);
           }
         }
@@ -268,43 +273,7 @@ module.exports = {
       collector.on("collect", async (i) => {
         if (i.isModalSubmit()) return;
 
-        if (i.customId === "nav_prev" || i.customId === "nav_next") {
-          await i.deferUpdate();
-          if (i.customId === "nav_prev") currentPage--;
-          if (i.customId === "nav_next") currentPage++;
-
-          const { items: newItems, total: newTotal } =
-            await fetchPage(currentPage);
-          totalPages = Math.max(1, Math.ceil(newTotal / perPage));
-          await interaction.editReply(
-            renderContent(newItems, currentPage, totalPages, newTotal),
-          );
-          collector.resetTimer();
-        }
-
-        if (i.customId === "nav_video") {
-          const { items: currentItems } = await fetchPage(currentPage);
-          const card = currentItems[0];
-          const rawVideoUrl = card.artworks.image_url;
-
-          // 🛠️ Aprovechamos el formato minimalista para la información del video
-          const headerInfo = `🎥 ` + formatCardText(card, "minimalist");
-
-          const updatedRow = new ActionRowBuilder();
-          i.message.components[0].components.forEach((btn) => {
-            const newBtn = ButtonBuilder.from(btn);
-            if (btn.customId === "nav_video") newBtn.setDisabled(true);
-            updatedRow.addComponents(newBtn);
-          });
-
-          await i.update({
-            content: `[${headerInfo}](${rawVideoUrl})`,
-            embeds: [],
-            components: [updatedRow],
-          });
-          collector.resetTimer();
-        }
-
+        // --- MANEJO DE MODAL (SALTAR PÁGINA) ---
         if (i.customId === "nav_jump") {
           const modal = new ModalBuilder()
             .setCustomId("modal_jump_page")
@@ -338,14 +307,85 @@ module.exports = {
               return;
             }
 
-            currentPage = reqPage;
+            if (!ActionManager.lockUser(submitted.user.id)) {
+              await submitted.reply({
+                content: "⏳ Procesando tu acción, por favor espera...",
+                ephemeral: true,
+              });
+              return;
+            }
+
+            try {
+              currentPage = reqPage;
+              const { items: newItems, total: newTotal } =
+                await fetchPage(currentPage);
+              await submitted.update(
+                renderContent(newItems, currentPage, totalPages, newTotal),
+              );
+              collector.resetTimer();
+            } finally {
+              ActionManager.unlockUser(submitted.user.id);
+            }
+          } catch (e) {}
+          return;
+        }
+
+        // --- BOTONES DE NAVEGACIÓN ESTÁNDAR ---
+        await i.deferUpdate();
+
+        if (!ActionManager.lockUser(i.user.id)) {
+          return i.followUp({
+            content: "⏳ Procesando tu acción, por favor espera...",
+            ephemeral: true,
+          });
+        }
+
+        try {
+          // Deshabilitar botones temporalmente durante el fetch
+          const disabledRows = i.message.components.map((row) => {
+            const newRow = new ActionRowBuilder();
+            row.components.forEach((btn) => {
+              newRow.addComponents(ButtonBuilder.from(btn).setDisabled(true));
+            });
+            return newRow;
+          });
+          await interaction.editReply({ components: disabledRows });
+
+          if (i.customId === "nav_prev" || i.customId === "nav_next") {
+            if (i.customId === "nav_prev") currentPage--;
+            if (i.customId === "nav_next") currentPage++;
+
             const { items: newItems, total: newTotal } =
               await fetchPage(currentPage);
-            await submitted.update(
+            totalPages = Math.max(1, Math.ceil(newTotal / perPage));
+            await interaction.editReply(
               renderContent(newItems, currentPage, totalPages, newTotal),
             );
             collector.resetTimer();
-          } catch (e) {}
+          }
+
+          if (i.customId === "nav_video") {
+            const { items: currentItems } = await fetchPage(currentPage);
+            const card = currentItems[0];
+            const rawVideoUrl = card.artworks.image_url;
+            const headerInfo = `🎥 ` + formatCardText(card, "minimalist");
+
+            const updatedRow = new ActionRowBuilder();
+            i.message.components[0].components.forEach((btn) => {
+              const newBtn = ButtonBuilder.from(btn);
+              if (btn.customId === "nav_video") newBtn.setDisabled(true);
+              updatedRow.addComponents(newBtn);
+            });
+
+            await interaction.editReply({
+              content: `[${headerInfo}](${rawVideoUrl})`,
+              embeds: [],
+              components: [updatedRow],
+            });
+            collector.resetTimer();
+          }
+        } finally {
+          ActionManager.unlockUser(i.user.id);
         }
       });
 

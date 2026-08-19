@@ -8,6 +8,7 @@ const {
 const supabase = require("../database/supabase");
 const artworkService = require("../services/artwork");
 const { buildArtworkEmbed } = require("../utils/embeds");
+const ActionManager = require("../utils/ActionManager"); // Importamos el gestor anti-spam
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -30,7 +31,6 @@ module.exports = {
     try {
       const id = interaction.options.getInteger("id");
 
-      // 🛠️ FILTRO: inner join y artworks.status = 'active'
       const { data: pa, error } = await supabase
         .from("player_artworks")
         .select(
@@ -46,15 +46,27 @@ module.exports = {
         });
       }
 
-      const embed = buildArtworkEmbed(pa.artworks, {
+      const art = pa.artworks;
+      const isGif = art.is_gif ?? /\.(gif)$/i.test(art.image_url);
+      const isVideo = art.is_video ?? /\.(mp4|webm)$/i.test(art.image_url);
+
+      const embed = buildArtworkEmbed(art, {
         playerArtwork: pa,
         ownerUsername: pa.players?.username || "Desconocido",
-        collectionName: pa.artworks.collections?.name || "Desconocida",
-        showVideoText: true, // Avisa del video
+        collectionName: art.collections?.name || "Desconocida",
+        showVideoText: true,
       });
 
-      const isVideo =
-        pa.artworks.image_url && pa.artworks.image_url.match(/\.(mp4|webm)$/i);
+      // 🛠️ Ajuste de URL y aviso si es GIF animado
+      if (isGif) {
+        embed.setImage(art.image_url);
+        embed.setFooter({
+          text:
+            (embed.data.footer?.text ? embed.data.footer.text + " | " : "") +
+            "💡 Los GIFs pueden tardar en cargar",
+        });
+      }
+
       const row = new ActionRowBuilder();
 
       if (isVideo) {
@@ -67,10 +79,9 @@ module.exports = {
         );
       }
 
-      // Botón de reporte
       row.addComponents(
         new ButtonBuilder()
-          .setCustomId(`view_report_${pa.artworks.id}`)
+          .setCustomId(`view_report_${art.id}`)
           .setLabel("Reportar")
           .setStyle(ButtonStyle.Secondary)
           .setEmoji("🚨"),
@@ -82,44 +93,54 @@ module.exports = {
         components: [row],
       });
 
-      // Quitamos el filtro estricto para que la comunidad pueda ayudar a reportar
       const collector = msg.createMessageComponentCollector({
         componentType: ComponentType.Button,
         time: 60000,
       });
 
       collector.on("collect", async (i) => {
-        if (i.customId === "view_play_video") {
-          // protegemos la interacción del video para evitar spam en el chat
-          if (i.user.id !== interaction.user.id) {
-            return i.reply({
-              content:
-                "❌ Solo la persona que usó el comando puede reproducir el video aquí.",
-              ephemeral: true,
-            });
-          }
-
-          const rawVideoUrl = pa.artworks.image_url;
-          const headerInfo = `🎥 **${pa.artworks.name} (ID: ${pa.id}) | ⭐${pa.stars} | Nv.${pa.level} | ${pa.artworks.rarity_id.name}**`;
-
-          const updatedRow = new ActionRowBuilder();
-          i.message.components[0].components.forEach((btn) => {
-            if (btn.customId !== "view_play_video")
-              updatedRow.addComponents(ButtonBuilder.from(btn));
-          });
-
-          await i.update({
-            content: `${i.message.content}\n\n[${headerInfo}](${rawVideoUrl})`,
-            embeds: [],
-            components: updatedRow.components.length ? [updatedRow] : [],
+        // 🛠️ Control de concurrencia y bloqueo de usuario
+        if (!ActionManager.lockUser(i.user.id)) {
+          return i.reply({
+            content: "⏳ Procesando tu acción, por favor espera...",
+            ephemeral: true,
           });
         }
 
-        if (i.customId.startsWith("view_report_")) {
-          await i.deferReply({ ephemeral: true });
-          try {
+        try {
+          if (i.customId === "view_play_video") {
+            if (i.user.id !== interaction.user.id) {
+              return i.reply({
+                content:
+                  "❌ Solo la persona que usó el comando puede reproducir el video aquí.",
+                ephemeral: true,
+              });
+            }
+
+            await i.deferUpdate();
+            const rawVideoUrl = art.image_url;
+            const rarityData = require("../utils/rarity").get(art.rarity_id);
+            const rarityName = rarityData ? rarityData.name : "";
+            const headerInfo = `🎥 **${art.name} (ID: ${pa.id}) | ⭐${pa.stars} | Nv.${pa.level} | ${rarityName}**`;
+
+            const updatedRow = new ActionRowBuilder();
+            i.message.components[0].components.forEach((btn) => {
+              if (btn.customId !== "view_play_video")
+                updatedRow.addComponents(
+                  ButtonBuilder.from(btn).setDisabled(true),
+                );
+            });
+
+            await interaction.editReply({
+              content: `${i.message.content}\n\n[${headerInfo}](${rawVideoUrl})`,
+              embeds: [],
+              components: updatedRow.components.length ? [updatedRow] : [],
+            });
+          }
+
+          if (i.customId.startsWith("view_report_")) {
+            await i.deferReply({ ephemeral: true });
             const artId = i.customId.split("view_report_")[1];
-            // El ID que se envía ahora es el de la persona que hizo clic (i.user.id), no el del comando
             const rep = await artworkService.reportArtwork(artId, i.user.id);
             if (rep.hidden) {
               await i.editReply({
@@ -130,9 +151,9 @@ module.exports = {
                 content: `🚨 Artwork reportado. (Reportes: ${rep.currentCount})`,
               });
             }
-          } catch (err) {
-            await i.editReply({ content: `❌ ${err.message}` });
           }
+        } finally {
+          ActionManager.unlockUser(i.user.id);
         }
       });
 
