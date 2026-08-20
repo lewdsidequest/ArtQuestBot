@@ -158,8 +158,16 @@ module.exports = {
         }
 
         if (targetValue === pa.level) {
+          // 🛠️ Calculamos el costo de solo 1 nivel para mostrarle cuánto le falta
+          const costForOne = calculateLevelUpgradeCost(
+            pa.level,
+            pa.level + 1,
+            prestigeLevel,
+            rarityId,
+            ecoConfig,
+          );
           return interaction.editReply({
-            content: `❌ No tienes suficientes fondos para subir de nivel.\nTu saldo: **${currentBalance.toLocaleString()} ${currencyEmoji}**.`,
+            content: `❌ No tienes suficientes fondos para subir de nivel.\nNecesitas mínimo **${costForOne.toLocaleString()} ${currencyEmoji}**. Tu saldo actual es: **${currentBalance.toLocaleString()} ${currencyEmoji}**.`,
           });
         }
 
@@ -200,8 +208,16 @@ module.exports = {
         }
 
         if (targetValue === pa.stars) {
+          // 🛠️ Calculamos el costo de solo 1 estrella para mostrarle cuánto le falta
+          const costForOne = calculateStarUpgradeCost(
+            pa.stars,
+            pa.stars + 1,
+            prestigeLevel,
+            rarityId,
+            ecoConfig,
+          );
           return interaction.editReply({
-            content: `❌ No tienes suficiente polvo para subir estrellas.\nTu saldo: **${currentBalance.toLocaleString()} ${currencyEmoji}**.`,
+            content: `❌ No tienes suficiente polvo para subir estrellas.\nNecesitas mínimo **${costForOne.toLocaleString()} ${currencyEmoji}**. Tu saldo actual es: **${currentBalance.toLocaleString()} ${currencyEmoji}**.`,
           });
         }
 
