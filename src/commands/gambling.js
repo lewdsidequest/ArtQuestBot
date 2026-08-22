@@ -8,11 +8,10 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  MessageFlags,
 } = require("discord.js");
 const gamblingService = require("../services/gambling");
 const economy = require("../services/economy");
-const ActionManager = require("../utils/ActionManager"); // 🛠️ GESTOR ANTI-SPAM
+const ActionManager = require("../utils/ActionManager");
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -34,10 +33,23 @@ module.exports = {
       const machines = await gamblingService.getActiveMachines("slots");
       const machine = machines.find((m) => m.id === machineId);
 
-      if (!machine) {
+      if (!machine)
         return interaction.editReply({
           content: "❌ Máquina no encontrada o fuera de servicio.",
         });
+
+      try {
+        await gamblingService.checkJackpotLimit(interaction.user.id, machine);
+      } catch (cooldownError) {
+        const limitEmbed = new EmbedBuilder()
+          .setColor(0xe74c3c)
+          .setDescription(
+            `❌ ${cooldownError.message.replace("esta máquina", `**${machine.name}**`)}`,
+          );
+
+        if (machine.config?.thumbnail_url)
+          limitEmbed.setThumbnail(machine.config.thumbnail_url);
+        return interaction.editReply({ embeds: [limitEmbed] });
       }
 
       const minBet = machine.config?.min_bet || 10;
@@ -49,20 +61,21 @@ module.exports = {
       const buildInitEmbed = async (playerId) => {
         const player = await economy.getPlayer(playerId);
         const bal = isDust ? player.star_dust : player.ink_dollars;
+        const spent = player.casino_spent || 0;
 
         const embed = new EmbedBuilder()
           .setColor(0x3498db)
           .setTitle(`🎰 ${machine.name}`)
           .setDescription(
-            `💳 **Tu Saldo:** **${bal.toLocaleString()} ${currency}**\n\n` +
+            `💳 Tu Saldo Actual: **${bal.toLocaleString()} ${currency}**\n` +
+              // `💸 **Casino Gastado:** **${spent.toLocaleString()}**\n\n` +
               `¡Bienvenido a la tragamonedas!\n\n` +
               `💵 **Apuesta Actual:** ${currentBet.toLocaleString()} ${currency}\n` +
               `*(Límites: ${minBet.toLocaleString()} - ${maxBet.toLocaleString()})*`,
           );
 
-        if (machine.config?.thumbnail_url) {
+        if (machine.config?.thumbnail_url)
           embed.setThumbnail(machine.config.thumbnail_url);
-        }
         return embed;
       };
 
@@ -95,12 +108,10 @@ module.exports = {
       });
 
       collector.on("collect", async (i) => {
-        // --- CAMBIAR APUESTA ---
         if (i.customId === "gamble_change_bet") {
           const modal = new ModalBuilder()
             .setCustomId("modal_change_bet")
             .setTitle("Configurar Apuesta");
-
           const betInput = new TextInputBuilder()
             .setCustomId("input_bet_amount")
             .setLabel(`Mínimo: ${minBet} | Máximo: ${maxBet}`)
@@ -118,13 +129,11 @@ module.exports = {
                 m.user.id === interaction.user.id &&
                 m.customId === "modal_change_bet",
             });
-
-            if (!ActionManager.lockUser(interaction.user.id)) {
+            if (!ActionManager.lockUser(interaction.user.id))
               return submitted.reply({
                 content: "⏳ Procesando, espera...",
-                flags: MessageFlags.Ephemeral,
+                ephemeral: true,
               });
-            }
 
             try {
               const newVal = parseInt(
@@ -133,7 +142,7 @@ module.exports = {
               if (isNaN(newVal) || newVal < minBet || newVal > maxBet) {
                 await submitted.reply({
                   content: `❌ Cantidad inválida. Debe estar entre **${minBet.toLocaleString()}** y **${maxBet.toLocaleString()}**.`,
-                  flags: MessageFlags.Ephemeral,
+                  ephemeral: true,
                 });
               } else {
                 currentBet = newVal;
@@ -151,19 +160,16 @@ module.exports = {
           return;
         }
 
-        // --- APOSTAR (SPIN) ---
         if (i.customId === "gamble_spin") {
-          if (!ActionManager.lockUser(interaction.user.id)) {
+          if (!ActionManager.lockUser(interaction.user.id))
             return i.reply({
               content: "⏳ La máquina está girando...",
-              flags: MessageFlags.Ephemeral,
+              ephemeral: true,
             });
-          }
 
           try {
             await i.deferUpdate();
 
-            // 🛠️ Desactivar botones temporalmente
             const disabledRow = new ActionRowBuilder().addComponents(
               new ButtonBuilder(
                 i.message.components[0].components[0].data,
@@ -180,12 +186,13 @@ module.exports = {
               currentBet,
             );
             const player = await economy.getPlayer(interaction.user.id);
+
             const newBal = isDust ? player.star_dust : player.ink_dollars;
+            const spent = player.casino_spent || 0;
 
             const spinEmbed = new EmbedBuilder().setTitle(`🎰 ${machine.name}`);
             if (machine.config?.thumbnail_url)
               spinEmbed.setThumbnail(machine.config.thumbnail_url);
-
             spinEmbed.setColor(
               result.winnings > 0
                 ? result.isJackpot
@@ -205,14 +212,14 @@ module.exports = {
               : result.winnings > 0
                 ? emojis[Math.floor(Math.random() * emojis.length)]
                 : e1;
-
             let slotDisplay = result.isJackpot
               ? `[ 🎰 | 🎰 | 🎰 ]`
               : `[ ${e1} | ${e2} | ${e3} ]`;
 
-            let desc = `💳 **Saldo Actual:** **${newBal.toLocaleString()} ${currency}**\n\n`;
+            let desc = `💳 Saldo Actual: **${newBal.toLocaleString()} ${currency}**\n`;
+            // desc += `💸 **Casino Gastado:** **${spent.toLocaleString()}**\n\n`;
             desc += `\`\`\`text\n      ${slotDisplay}      \n\`\`\`\n`;
-            desc += `Apuesta: **${currentBet.toLocaleString()} ${currency}**\n\n`;
+            desc += `Apuesta: **${currentBet.toLocaleString()} ${currency}** | ⏱️ Apuestas realizadas: **${result.pityCount}**\n\n`;
 
             if (result.winnings > 0) {
               desc += result.isJackpot
@@ -233,7 +240,6 @@ module.exports = {
               return;
             }
 
-            // Mantenemos la botonera activa para volver a jugar
             await i.editReply({
               embeds: [spinEmbed],
               components: [buildRow()],
@@ -242,9 +248,9 @@ module.exports = {
           } catch (e) {
             await interaction.followUp({
               content: `❌ ${e.message}`,
-              flags: MessageFlags.Ephemeral,
+              ephemeral: true,
             });
-            await interaction.editReply({ components: [buildRow()] }); // Restaura botones
+            await interaction.editReply({ components: [buildRow()] });
             collector.resetTimer();
           } finally {
             ActionManager.unlockUser(interaction.user.id);
@@ -265,14 +271,19 @@ module.exports = {
   async autocomplete(interaction) {
     try {
       const focused = interaction.options.getFocused();
+      // 🛠️ CORRECCIÓN: Convertimos a String y evitamos fallos si es null o un número
+      const searchStr = String(focused || "").toLowerCase();
+
       const machines = await gamblingService.getActiveMachines("slots");
       const filtered = machines
-        .filter((m) => m.name.toLowerCase().includes(focused.toLowerCase()))
+        .filter((m) => m.name.toLowerCase().includes(searchStr))
         .slice(0, 25);
+
       await interaction.respond(
         filtered.map((m) => ({ name: m.name, value: m.id })),
       );
     } catch (e) {
+      console.error("[Gambling Autocomplete Error]", e);
       await interaction.respond([]);
     }
   },

@@ -8,7 +8,7 @@ const {
 const supabase = require("../database/supabase");
 const artworkService = require("../services/artwork");
 const { buildArtworkEmbed } = require("../utils/embeds");
-const ActionManager = require("../utils/ActionManager"); // Importamos el gestor anti-spam
+const ActionManager = require("../utils/ActionManager");
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -50,6 +50,9 @@ module.exports = {
       const isGif = art.is_gif ?? /\.(gif)$/i.test(art.image_url);
       const isVideo = art.is_video ?? /\.(mp4|webm)$/i.test(art.image_url);
 
+      // 🛠️ Verificamos si el que ejecuta el comando es el dueño actual de la carta
+      const isOwner = pa.player_id === interaction.user.id;
+
       const embed = buildArtworkEmbed(art, {
         playerArtwork: pa,
         ownerUsername: pa.players?.username || "Desconocido",
@@ -57,7 +60,6 @@ module.exports = {
         showVideoText: true,
       });
 
-      // 🛠️ Ajuste de URL y aviso si es GIF animado
       if (isGif) {
         embed.setImage(art.image_url);
         embed.setFooter({
@@ -87,6 +89,19 @@ module.exports = {
           .setEmoji("🚨"),
       );
 
+      // 🛠️ Si es el dueño, agregamos el botón de Toggle Favorito
+      if (isOwner) {
+        row.addComponents(
+          new ButtonBuilder()
+            .setCustomId("view_fav_toggle")
+            .setLabel(pa.is_favorite ? "Quitar Favorito" : "Hacer Favorito")
+            .setStyle(
+              pa.is_favorite ? ButtonStyle.Secondary : ButtonStyle.Success,
+            )
+            .setEmoji("💎"),
+        );
+      }
+
       const msg = await interaction.editReply({
         content: `🔍 **Inspeccionando carta con el ID ${id}**:`,
         embeds: [embed],
@@ -99,15 +114,71 @@ module.exports = {
       });
 
       collector.on("collect", async (i) => {
-        // 🛠️ Control de concurrencia y bloqueo de usuario
-        if (!ActionManager.lockUser(i.user.id)) {
-          return i.reply({
-            content: "⏳ Procesando tu acción, por favor espera...",
-            ephemeral: true,
-          });
-        }
+        if (!ActionManager.lockUser(i.user.id)) return;
 
         try {
+          // --- LÓGICA DEL BOTÓN DE FAVORITO ---
+          if (i.customId === "view_fav_toggle") {
+            if (i.user.id !== interaction.user.id) {
+              return i.reply({
+                content: "❌ No eres el dueño de esta carta.",
+                ephemeral: true,
+              });
+            }
+
+            await i.deferUpdate();
+            const newState = !pa.is_favorite;
+
+            const { error: updErr } = await supabase
+              .from("player_artworks")
+              .update({ is_favorite: newState })
+              .eq("id", pa.id);
+
+            if (!updErr) {
+              pa.is_favorite = newState; // Actualizamos la variable en memoria
+
+              // Reconstruimos el embed para que aparezca/desaparezca la badge "💎 Favorito"
+              const updatedEmbed = buildArtworkEmbed(art, {
+                playerArtwork: pa,
+                ownerUsername: pa.players?.username || "Desconocido",
+                collectionName: art.collections?.name || "Desconocida",
+                showVideoText: true,
+              });
+
+              if (isGif) {
+                updatedEmbed.setImage(art.image_url);
+                updatedEmbed.setFooter({
+                  text:
+                    (updatedEmbed.data.footer?.text
+                      ? updatedEmbed.data.footer.text + " | "
+                      : "") + "💡 Los GIFs pueden tardar en cargar",
+                });
+              }
+
+              // Actualizamos el estilo y texto del botón
+              const updatedRow = new ActionRowBuilder();
+              i.message.components[0].components.forEach((btn) => {
+                if (btn.customId === "view_fav_toggle") {
+                  updatedRow.addComponents(
+                    ButtonBuilder.from(btn)
+                      .setLabel(newState ? "Quitar Favorito" : "Hacer Favorito")
+                      .setStyle(
+                        newState ? ButtonStyle.Secondary : ButtonStyle.Success,
+                      ),
+                  );
+                } else {
+                  updatedRow.addComponents(ButtonBuilder.from(btn));
+                }
+              });
+
+              await interaction.editReply({
+                embeds: [updatedEmbed],
+                components: [updatedRow],
+              });
+            }
+          }
+
+          // --- LÓGICA DE VIDEO ---
           if (i.customId === "view_play_video") {
             if (i.user.id !== interaction.user.id) {
               return i.reply({
@@ -119,16 +190,19 @@ module.exports = {
 
             await i.deferUpdate();
             const rawVideoUrl = art.image_url;
-            const rarityData = require("../utils/rarity").get(art.rarity_id);
+            const rarityData = require("../utils/rarity").get(
+              pa.rarity_id || art.rarity_id,
+            );
             const rarityName = rarityData ? rarityData.name : "";
             const headerInfo = `🎥 **${art.name} (ID: ${pa.id}) | ⭐${pa.stars} | Nv.${pa.level} | ${rarityName}**`;
 
             const updatedRow = new ActionRowBuilder();
             i.message.components[0].components.forEach((btn) => {
-              if (btn.customId !== "view_play_video")
+              if (btn.customId !== "view_play_video") {
                 updatedRow.addComponents(
                   ButtonBuilder.from(btn).setDisabled(true),
                 );
+              }
             });
 
             await interaction.editReply({
@@ -138,6 +212,7 @@ module.exports = {
             });
           }
 
+          // --- LÓGICA DE REPORTE ---
           if (i.customId.startsWith("view_report_")) {
             await i.deferReply({ ephemeral: true });
             const artId = i.customId.split("view_report_")[1];

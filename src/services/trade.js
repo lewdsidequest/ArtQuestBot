@@ -1,5 +1,5 @@
 const supabase = require("../database/supabase");
-const RarityManager = require("../utils/rarity"); // Importamos el gestor de rarezas
+const RarityManager = require("../utils/rarity");
 
 class TradeService {
   async initiate1v1Trade(
@@ -22,7 +22,7 @@ class TradeService {
     if (sErr || !senderCard)
       throw new Error(`No posees la carta con ID ${senderArtworkId}.`);
     if (senderCard.is_loved)
-      throw new Error("No puedes ofrecer tu Carta 'Amada'.");
+      throw new Error("No puedes ofrecer tu Carta Amada.");
 
     const { data: receiverCard, error: rErr } = await supabase
       .from("player_artworks")
@@ -36,14 +36,15 @@ class TradeService {
         `El usuario destino no posee la carta con ID ${receiverArtworkId}.`,
       );
     if (receiverCard.is_loved)
-      throw new Error(
-        "La carta que pides es la Carta 'Amada' del otro usuario.",
-      );
+      throw new Error("La carta que pides es la Carta Amada del otro usuario.");
 
-    // ACTUALIZACIÓN: Comparamos el rarity_id numérico y armamos un mensaje dinámico
-    if (senderCard.artworks.rarity_id !== receiverCard.artworks.rarity_id) {
-      const sRarity = RarityManager.get(senderCard.artworks.rarity_id);
-      const rRarity = RarityManager.get(receiverCard.artworks.rarity_id);
+    // 🛠️ ACTUALIZACIÓN: Comparamos el rarity_id EVOLUCIONADO
+    const sRarityId = senderCard.rarity_id || senderCard.artworks.rarity_id;
+    const rRarityId = receiverCard.rarity_id || receiverCard.artworks.rarity_id;
+
+    if (sRarityId !== rRarityId) {
+      const sRarity = RarityManager.get(sRarityId);
+      const rRarity = RarityManager.get(rRarityId);
 
       const sRarityDisplay = sRarity
         ? `${sRarity.name} ${sRarity.emoji}`
@@ -92,13 +93,10 @@ class TradeService {
     const senderCardId = parseInt(trade.sender_offers[0], 10);
     const receiverCardId = parseInt(trade.receiver_offers[0], 10);
 
-    // Transferir carta del Sender al Receiver simplemente cambiando el player_id
     await supabase
       .from("player_artworks")
       .update({ player_id: receiverDiscordId })
       .eq("id", senderCardId);
-
-    // Transferir carta del Receiver al Sender
     await supabase
       .from("player_artworks")
       .update({ player_id: senderDiscordId })

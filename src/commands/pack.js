@@ -30,7 +30,7 @@ module.exports = {
     try {
       const player = await economy.getOrCreatePlayer(
         interaction.user.id,
-        interaction.user.username,
+        interaction.user.displayName,
       );
       const collectionSlug = interaction.options.getString("coleccion");
       const collection =
@@ -93,12 +93,7 @@ module.exports = {
 
         // --- BOTÓN ABRIR SOBRE ---
         if (i.customId === `pack_open_${collectionSlug}`) {
-          if (!ActionManager.lockUser(i.user.id)) {
-            return i.reply({
-              content: "⏳ Abriendo tu sobre, por favor espera...",
-              flags: MessageFlags.ephemeral,
-            });
-          }
+          if (!ActionManager.lockUser(i.user.id)) return;
 
           try {
             // 🛠️ Apagamos los botones al instante para evitar doble clic
@@ -117,14 +112,15 @@ module.exports = {
             const result = await packService.openPack(
               interaction.user.id,
               collectionSlug,
-              interaction.user.username,
+              interaction.user.displayName,
             );
 
             const artworkEmbed = buildArtworkEmbed(result.artwork, {
               playerArtwork: result.playerArtwork,
               isNewGlobal: result.isNewGlobal,
               isNewPersonal: result.isNewPersonal,
-              ownerUsername: interaction.user.username,
+              ownerUsername:
+                interaction.member?.displayName || interaction.user.displayName,
               collectionName: collection.name,
               showVideoText: true,
             });
@@ -231,12 +227,7 @@ module.exports = {
 
         // --- BOTÓN CONVERTIR A POLVO ---
         if (i.customId.startsWith("dust_art_")) {
-          if (!ActionManager.lockUser(i.user.id)) {
-            return i.reply({
-              content: "⏳ Convirtiendo a polvo...",
-              flags: MessageFlags.Ephemeral,
-            });
-          }
+          if (!ActionManager.lockUser(i.user.id)) return;
 
           try {
             // Apagamos botones

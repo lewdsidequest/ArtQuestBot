@@ -50,7 +50,7 @@ module.exports = {
     try {
       const player = await economy.getOrCreatePlayer(
         interaction.user.id,
-        interaction.user.username,
+        interaction.user.displayName,
       );
       const sub = interaction.options.getSubcommand();
 
@@ -85,17 +85,21 @@ module.exports = {
             .eq("key", "economy_costs")
             .maybeSingle();
           const ecoConfig = configData?.value || null;
+
+          // 🛠️ ECONOMÍA: Usar rareza evolucionada
+          const rarityId = pa.rarity_id || pa.artworks.rarity_id;
+
           const { calculateRefund } = require("../utils/power");
           const refund = calculateRefund(
             pa.invested_ink,
             pa.invested_dust,
-            pa.artworks.rarity_id,
-            pa.prestige_level || 0, // 🛠️ ACTUALIZADO
+            rarityId,
+            pa.prestige_level || 0,
             ecoConfig,
           );
 
           const RarityManager = require("../utils/rarity");
-          const rarityData = RarityManager.get(pa.artworks.rarity_id);
+          const rarityData = RarityManager.get(rarityId);
           const rarityDisplay = rarityData
             ? `${rarityData.name} ${rarityData.emoji || ""}`
             : "Unknown";
@@ -152,12 +156,7 @@ module.exports = {
             await i.deferUpdate(); // 🛠️ Acuse de recibo a Discord
 
             // 🛠️ SISTEMA DE BLOQUEO (Anti-Spam)
-            if (!ActionManager.lockUser(i.user.id)) {
-              return i.followUp({
-                content: "⏳ Procesando tu acción, por favor espera...",
-                ephemeral: true,
-              });
-            }
+            if (!ActionManager.lockUser(i.user.id)) return;
 
             try {
               // 🛠️ DESHABILITAR BOTONES VISUALMENTE
@@ -304,12 +303,7 @@ module.exports = {
         collector.on("collect", async (i) => {
           await i.deferUpdate(); // 🛠️ Acuse de recibo a Discord
 
-          if (!ActionManager.lockUser(i.user.id)) {
-            return i.followUp({
-              content: "⏳ Procesando tu acción, por favor espera...",
-              ephemeral: true,
-            });
-          }
+          if (!ActionManager.lockUser(i.user.id)) return;
 
           try {
             const disabledRow = new ActionRowBuilder().addComponents(
@@ -452,12 +446,7 @@ module.exports = {
         collector.on("collect", async (i) => {
           await i.deferUpdate(); // 🛠️ Acuse de recibo a Discord
 
-          if (!ActionManager.lockUser(i.user.id)) {
-            return i.followUp({
-              content: "⏳ Procesando tu acción, por favor espera...",
-              ephemeral: true,
-            });
-          }
+          if (!ActionManager.lockUser(i.user.id)) return;
 
           try {
             const disabledRow = new ActionRowBuilder().addComponents(

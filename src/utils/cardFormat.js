@@ -14,14 +14,16 @@ function formatCardText(item, formatType = "detailed", index = null) {
   const fav = pa.is_favorite ? "💎 " : "";
   const prestige = pa.prestige_level > 0 ? ` - 💠${pa.prestige_level}` : "";
 
-  // 🛠️ ACTUALIZACIÓN: Leemos de la BD. Si es null (cartas viejas), usa Regex de respaldo.
   const isVid =
     art.is_video ??
     (art.image_url && art.image_url.match(/\.(mp4|webm)$/i) !== null);
   const isGif =
     art.is_gif ?? (art.image_url && art.image_url.match(/\.(gif)$/i) !== null);
 
-  const rarityData = RarityManager.get(art.rarity_id);
+  // 🛠️ ACTUALIZACIÓN: Usar rareza evolucionada si existe, de lo contrario la base
+  const currentRarityId = pa.rarity_id || art.rarity_id;
+
+  const rarityData = RarityManager.get(currentRarityId);
   const rarityName = rarityData ? rarityData.name : "Unknown";
   const rarityEmoji = rarityData ? rarityData.emoji : "Undefined";
 

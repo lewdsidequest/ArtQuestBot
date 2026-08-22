@@ -12,7 +12,7 @@ module.exports = {
     try {
       const player = await economy.getOrCreatePlayer(
         interaction.user.id,
-        interaction.user.username,
+        interaction.user.displayName,
       );
 
       // 1. Verificación estricta de Cooldown ANTES de calcular el dinero

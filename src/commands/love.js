@@ -104,7 +104,8 @@ module.exports = {
 
         const embed = buildArtworkEmbed(lovedCard.artworks, {
           playerArtwork: lovedCard,
-          ownerUsername: interaction.user.username,
+          ownerUsername:
+            interaction.member?.displayName || interaction.user.displayName,
           showVideoText: true,
         });
 

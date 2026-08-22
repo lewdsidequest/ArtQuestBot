@@ -1,15 +1,24 @@
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+const {
+  SlashCommandBuilder,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
+  MessageFlags,
+} = require("discord.js");
 const economy = require("../services/economy");
 const medalsService = require("../services/medals");
+const ActionManager = require("../utils/ActionManager");
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("medals")
-    .setDescription("Muestra tus medallas desbloqueadas y en progreso")
+    .setDescription("Revisa tu progreso y reclama recompensas de medallas")
     .addUserOption((opt) =>
       opt
         .setName("usuario")
-        .setDescription("Usuario del que quieres ver las medallas (opcional)")
+        .setDescription("Usuario del que quieres ver las medallas")
         .setRequired(false),
     ),
 
@@ -19,63 +28,202 @@ module.exports = {
     try {
       const targetUser =
         interaction.options.getUser("usuario") || interaction.user;
+      await economy.getOrCreatePlayer(targetUser.id, targetUser.displayName);
 
-      // 1. Asegurar que el usuario exista
-      await economy.getOrCreatePlayer(targetUser.id, targetUser.username);
-
-      // 2. Llamar al nuevo servicio que evalúa, guarda y organiza las medallas
+      // Extraemos la información del servicio
       const { unlocked, locked, newlyUnlockedCount } =
         await medalsService.evaluateAndGetMedals(targetUser.id);
 
-      // 3. Construir las listas visuales
-      let unlockedText = "";
-      let lockedText = "";
+      // Categorizamos las medallas
+      let pendingClaim = unlocked.filter((m) => !m.is_claimed);
+      let claimed = unlocked.filter((m) => m.is_claimed);
 
-      unlocked.forEach((medal) => {
-        unlockedText += `${medal.icon} **${medal.name}**\n*${medal.description}*\n\n`;
+      // Ordenamos las bloqueadas por porcentaje de progreso (las más cercanas a completarse primero)
+      let lockedSorted = locked.sort((a, b) => {
+        const ratioA = (a.currentProgress || 0) / a.condition_value;
+        const ratioB = (b.currentProgress || 0) / b.condition_value;
+        return ratioB - ratioA;
       });
 
-      locked.forEach((medal) => {
-        const isCompleted = medal.currentProgress >= medal.condition_value;
-        const displayValue = Math.min(
-          medal.currentProgress,
-          medal.condition_value,
-        );
+      // El orden de visualización principal: 1. Por reclamar, 2. En progreso, 3. Completadas
+      let allMedals = [...pendingClaim, ...lockedSorted, ...claimed];
 
-        let progressStr = isCompleted
-          ? "¡Objetivo cumplido!"
-          : `${displayValue} / ${medal.condition_value}`;
+      const perPage = 5;
+      let totalPages = Math.max(1, Math.ceil(allMedals.length / perPage));
+      let currentPage = 1;
 
-        lockedText += `🔒 **${medal.name}**\n*${medal.description}*\nProgreso: \`${progressStr}\`\n\n`;
-      });
+      // Función para renderizar la página actual en vivo
+      const renderPage = (page) => {
+        const start = (page - 1) * perPage;
+        const pageMedals = allMedals.slice(start, start + perPage);
 
-      if (!unlockedText)
-        unlockedText = "*Aún no ha desbloqueado ninguna medalla.*";
-      if (!lockedText)
-        lockedText = "*¡Ha desbloqueado todas las medallas disponibles!*";
+        let desc = "";
+        const claimButtons = [];
 
-      const embed = new EmbedBuilder()
-        .setColor(0xf1c40f) // Color dorado
-        .setTitle(`🏅 Medallas de ${targetUser.username}`)
-        .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
-        .addFields(
-          { name: "✨ Desbloqueadas", value: unlockedText },
-          { name: "🔒 Siguiente Objetivo", value: lockedText },
-        );
+        pageMedals.forEach((medal) => {
+          // Si está pendiente por reclamar
+          if (pendingClaim.includes(medal)) {
+            let rewards = [];
+            if (medal.reward_ink)
+              rewards.push(`${medal.reward_ink.toLocaleString()} Ink$`);
+            if (medal.reward_dust)
+              rewards.push(`${medal.reward_dust.toLocaleString()} Polvo`);
+            if (medal.reward_card_id) rewards.push(`Carta Exclusiva`);
+            const rewardText =
+              rewards.length > 0 ? rewards.join(" | ") : "Recompensa Secreta";
 
-      // Si el usuario acaba de ganar medallas gracias a abrir este comando, le avisamos con un mensaje extra
-      let content = "";
+            desc += `🎁 **${medal.name}**\n*${medal.description}*\n> 💰 **Recompensa:** ${rewardText}\n\n`;
+
+            // Si el usuario es el dueño, le agregamos un botón de reclamo
+            if (targetUser.id === interaction.user.id) {
+              claimButtons.push(
+                new ButtonBuilder()
+                  .setCustomId(`claim_${medal.id}`)
+                  .setLabel(`Reclamar ${medal.name}`)
+                  .setStyle(ButtonStyle.Success)
+                  .setEmoji("🎁"),
+              );
+            }
+          }
+          // Si ya fue reclamada / completada
+          else if (claimed.includes(medal)) {
+            desc += `🏅 **${medal.name}**\n*${medal.description}*\n> ✅ **Completada**\n\n`;
+          }
+          // Si sigue bloqueada
+          else {
+            const current = medal.currentProgress || 0;
+            const ratio = Math.min(1, current / medal.condition_value);
+            const percent = Math.floor(ratio * 100);
+
+            desc += `🔒 **${medal.name}**\n*${medal.description}*\n> 📊 **Progreso:** \`${current.toLocaleString()} / ${medal.condition_value.toLocaleString()}\` (${percent}%)\n\n`;
+          }
+        });
+
+        const embed = new EmbedBuilder()
+          .setColor(0xf1c40f)
+          .setTitle(`🏅 Logros y Medallas de ${targetUser.displayName}`)
+          .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
+          .setDescription(
+            desc || "*No hay medallas registradas en el sistema aún.*",
+          )
+          .setFooter({
+            text: `Página ${page}/${totalPages} | Total: ${unlocked.length} medallas desbloqueadas`,
+          });
+
+        const rows = [];
+
+        // Fila de Navegación
+        const navRow = new ActionRowBuilder();
+        if (page > 1)
+          navRow.addComponents(
+            new ButtonBuilder()
+              .setCustomId("nav_prev")
+              .setLabel("◀ Anterior")
+              .setStyle(ButtonStyle.Primary),
+          );
+        if (page < totalPages)
+          navRow.addComponents(
+            new ButtonBuilder()
+              .setCustomId("nav_next")
+              .setLabel("Siguiente ▶")
+              .setStyle(ButtonStyle.Primary),
+          );
+        if (navRow.components.length > 0) rows.push(navRow);
+
+        // Fila de Botones de Reclamo (Máximo 5 botones por fila, pero como paginamos de a 5, cabe perfecto)
+        if (claimButtons.length > 0) {
+          rows.push(
+            new ActionRowBuilder().addComponents(...claimButtons.slice(0, 5)),
+          );
+        }
+
+        return { embeds: [embed], components: rows };
+      };
+
+      let initialContent = "";
       if (newlyUnlockedCount > 0 && targetUser.id === interaction.user.id) {
-        content = `🎉 **¡Felicidades! Acabas de guardar ${newlyUnlockedCount} medalla(s) nueva(s) en tu vitrina.**\n`;
+        initialContent = `🎉 **¡Felicidades! Has cumplido el objetivo de ${newlyUnlockedCount} medalla(s) nueva(s).**\n`;
       }
 
-      await interaction.editReply({
-        content: content || undefined,
-        embeds: [embed],
+      const msg = await interaction.editReply({
+        content: initialContent || undefined,
+        ...renderPage(currentPage),
+      });
+
+      // Collector para botones de navegación y reclamo
+      const collector = msg.createMessageComponentCollector({
+        componentType: ComponentType.Button,
+        time: 120000,
+        filter: (i) => i.user.id === interaction.user.id,
+      });
+
+      collector.on("collect", async (i) => {
+        if (!ActionManager.lockUser(i.user.id)) return;
+
+        try {
+          // NAVEGACIÓN
+          if (i.customId === "nav_prev" || i.customId === "nav_next") {
+            if (i.customId === "nav_prev") currentPage--;
+            if (i.customId === "nav_next") currentPage++;
+            await i.update(renderPage(currentPage));
+            collector.resetTimer();
+            return;
+          }
+
+          // RECLAMAR RECOMPENSA
+          if (i.customId.startsWith("claim_")) {
+            const medalId = parseInt(i.customId.split("_")[1]);
+
+            try {
+              const rewards = await medalsService.claimMedalReward(
+                interaction.user.id,
+                medalId,
+              );
+
+              // Actualizamos nuestras listas en memoria para que el UI cambie al instante
+              const claimedMedal = pendingClaim.find((m) => m.id === medalId);
+              if (claimedMedal) {
+                pendingClaim = pendingClaim.filter((m) => m.id !== medalId);
+                claimedMedal.is_claimed = true;
+                claimed.push(claimedMedal);
+                // Reconstruimos la lista global
+                allMedals = [...pendingClaim, ...lockedSorted, ...claimed];
+              }
+
+              let rewardMsg = `✅ **¡Recompensa Reclamada!**\n`;
+              if (rewards.ink > 0)
+                rewardMsg += `💰 +${rewards.ink.toLocaleString()} Ink$\n`;
+              if (rewards.dust > 0)
+                rewardMsg += `🌟 +${rewards.dust.toLocaleString()} Polvo\n`;
+              if (rewards.cardId)
+                rewardMsg += `🖼️ +1 Carta Exclusiva (Usa \`/view id:${rewards.cardId}\` para verla)\n`;
+
+              await i.reply({
+                content: rewardMsg,
+                flags: MessageFlags.Ephemeral,
+              });
+
+              // Actualizamos el embed para quitar el botón
+              await interaction.editReply(renderPage(currentPage));
+              collector.resetTimer();
+            } catch (err) {
+              await i.reply({
+                content: `❌ Error: ${err.message}`,
+                flags: MessageFlags.Ephemeral,
+              });
+            }
+          }
+        } finally {
+          ActionManager.unlockUser(i.user.id);
+        }
+      });
+
+      collector.on("end", () => {
+        interaction.editReply({ components: [] }).catch(() => {});
       });
     } catch (err) {
       console.error("[Medals]", err);
-      await interaction.editReply({ content: `Error: ${err.message}` });
+      await interaction.editReply({ content: `❌ Error: ${err.message}` });
     }
   },
 };

@@ -14,7 +14,7 @@ module.exports = {
       const playerId = interaction.user.id;
       const player = await economy.getOrCreatePlayer(
         playerId,
-        interaction.user.username,
+        interaction.user.displayName,
       );
 
       // 1. Verificación por día de calendario (UTC)

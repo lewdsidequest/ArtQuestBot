@@ -30,9 +30,14 @@ class RarityManager {
   }
 
   /**
+   * Obtiene la siguiente rareza en la jerarquía (Para evolución)
+   */
+  getNextRarity(currentRarityId) {
+    return this.get(currentRarityId + 1);
+  }
+
+  /**
    * Roll a rarity based on configured probabilities for a collection.
-   * @param {Array} configs - Array of rarity_configs rows for a collection
-   * @returns {number} Rolled rarity_id
    */
   rollRarity(configs) {
     const rand = Math.random();

@@ -12,10 +12,9 @@ const {
 const economy = require("../services/economy");
 const packService = require("../services/pack");
 const { formatCardText } = require("../utils/cardFormat");
-const ActionManager = require("../utils/ActionManager"); // 🛠️ Anti-spam
+const ActionManager = require("../utils/ActionManager");
 const supabase = require("../database/supabase");
 
-// 🛠️ Helper para GIFs y Videos
 const getCardImageUrl = (art) => {
   const isGif = art.is_gif ?? /\.(gif)$/i.test(art.image_url);
   return isGif ? art.image_url : art.sample_url || art.image_url;
@@ -32,9 +31,7 @@ module.exports = {
         .addStringOption((opt) =>
           opt
             .setName("ids")
-            .setDescription(
-              "IDs separados por comas o espacios (ej. 12, 45, 102)",
-            )
+            .setDescription("IDs separados por comas o espacios")
             .setRequired(true),
         ),
     )
@@ -45,10 +42,15 @@ module.exports = {
         .addStringOption((opt) =>
           opt
             .setName("ids")
-            .setDescription(
-              "IDs separados por comas o espacios (ej. 12, 45, 102)",
-            )
+            .setDescription("IDs separados por comas o espacios")
             .setRequired(true),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("remove_all")
+        .setDescription(
+          "Limpia TODA tu lista de favoritos (Requiere confirmación)",
         ),
     )
     .addSubcommand((sub) =>
@@ -71,7 +73,110 @@ module.exports = {
         interaction.options.getUser("usuario") || interaction.user;
       const playerId = targetUser.id;
 
-      await economy.getOrCreatePlayer(playerId, targetUser.username);
+      await economy.getOrCreatePlayer(playerId, targetUser.displayName);
+
+      // ==========================================
+      // LÓGICA DE REMOVE ALL
+      // ==========================================
+      if (sub === "remove_all") {
+        if (targetUser.id !== interaction.user.id) {
+          return interaction.editReply(
+            "❌ Solo puedes modificar tus propios favoritos.",
+          );
+        }
+
+        const confirmEmbed = new EmbedBuilder()
+          .setColor(0xe74c3c)
+          .setTitle("⚠️ Confirmar Limpieza Total")
+          .setDescription(
+            "¿Estás seguro de que deseas quitar **TODAS** tus cartas de la lista de favoritos? Esta acción no destruye las cartas, pero dejarán de estar protegidas.",
+          );
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId("fav_clear_confirm")
+            .setLabel("Sí, limpiar favoritos")
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji("🗑️"),
+          new ButtonBuilder()
+            .setCustomId("fav_clear_cancel")
+            .setLabel("Cancelar")
+            .setStyle(ButtonStyle.Secondary),
+        );
+
+        const msg = await interaction.editReply({
+          embeds: [confirmEmbed],
+          components: [row],
+        });
+
+        const collector = msg.createMessageComponentCollector({
+          componentType: ComponentType.Button,
+          time: 60000,
+          filter: (i) => i.user.id === interaction.user.id,
+        });
+
+        collector.on("collect", async (i) => {
+          await i.deferUpdate();
+
+          if (!ActionManager.lockUser(i.user.id)) return;
+
+          try {
+            const disabledRow = new ActionRowBuilder().addComponents(
+              ButtonBuilder.from(
+                i.message.components[0].components[0],
+              ).setDisabled(true),
+              ButtonBuilder.from(
+                i.message.components[0].components[1],
+              ).setDisabled(true),
+            );
+            await interaction.editReply({ components: [disabledRow] });
+
+            if (i.customId === "fav_clear_cancel") {
+              return interaction.editReply({
+                content: "🚫 Operación cancelada. Tus favoritos están a salvo.",
+                embeds: [],
+                components: [],
+              });
+            }
+
+            if (i.customId === "fav_clear_confirm") {
+              const { error } = await supabase
+                .from("player_artworks")
+                .update({ is_favorite: false })
+                .eq("player_id", playerId)
+                .eq("is_favorite", true);
+
+              if (error)
+                throw new Error("Fallo al actualizar la base de datos.");
+
+              const successEmbed = new EmbedBuilder()
+                .setColor(0x2ecc71)
+                .setDescription(
+                  "✅ Tu lista de favoritos ha sido limpiada por completo.",
+                );
+              await interaction.editReply({
+                embeds: [successEmbed],
+                components: [],
+              });
+            }
+          } catch (e) {
+            await interaction.editReply({
+              content: `❌ Error: ${e.message}`,
+              embeds: [],
+              components: [],
+            });
+          } finally {
+            ActionManager.unlockUser(i.user.id);
+            collector.stop();
+          }
+        });
+
+        collector.on("end", async (collected, reason) => {
+          if (reason === "time")
+            interaction.editReply({ components: [] }).catch(() => {});
+        });
+        return;
+      }
 
       // ==========================================
       // LÓGICA DE ADD / REMOVE
@@ -90,17 +195,14 @@ module.exports = {
           .filter((n) => !isNaN(n) && n > 0);
         const uniqueIds = [...new Set(rawIds)];
 
-        if (uniqueIds.length === 0) {
+        if (uniqueIds.length === 0)
           return interaction.editReply(
-            "❌ No proporcionaste ningún ID numérico válido. Ejemplo de uso: `12, 45, 102`",
+            "❌ No proporcionaste ningún ID numérico válido. Ejemplo: `12, 45`",
           );
-        }
-
-        if (uniqueIds.length > 20) {
+        if (uniqueIds.length > 20)
           return interaction.editReply(
             "❌ Por favor, actualiza un máximo de 20 cartas a la vez.",
           );
-        }
 
         const isAdding = sub === "add";
         const affectedCards = await packService.setFavorites(
@@ -112,7 +214,6 @@ module.exports = {
         const cardsText = affectedCards
           .map((card) => formatCardText(card, "minimalist"))
           .join("\n");
-
         const embed = new EmbedBuilder()
           .setColor(isAdding ? 0xf1c40f : 0x95a5a6)
           .setTitle(
@@ -125,7 +226,7 @@ module.exports = {
         if (affectedCards.length < uniqueIds.length) {
           const ignoredCount = uniqueIds.length - affectedCards.length;
           embed.setFooter({
-            text: `⚠️ ${ignoredCount} ID(s) fueron ignorados (no existen o no te pertenecen).`,
+            text: `⚠️ ${ignoredCount} ID(s) ignorados (no existen o no te pertenecen).`,
           });
         }
 
@@ -133,13 +234,12 @@ module.exports = {
       }
 
       // ==========================================
-      // LÓGICA DE BINDER (VISUALIZACIÓN)
+      // LÓGICA DE BINDER
       // ==========================================
       if (sub === "binder") {
         let currentPage = 1;
         const perPage = 4;
 
-        // Extraemos las favoritas ordenadas por las más recientes
         const fetchPage = async (page) => {
           const from = (page - 1) * perPage;
           const to = from + perPage - 1;
@@ -161,8 +261,8 @@ module.exports = {
         if (!initialItems.length) {
           const msg =
             playerId === interaction.user.id
-              ? "No tienes ninguna carta marcada como favorita actualmente. Usa `/favorite add [id]`."
-              : `**${targetUser.username}** no tiene cartas favoritas públicas.`;
+              ? "No tienes ninguna carta marcada como favorita. Usa `/favorite add [id]`."
+              : `**${targetUser.displayName}** no tiene cartas favoritas.`;
           return interaction.editReply({ content: msg });
         }
 
@@ -170,15 +270,14 @@ module.exports = {
 
         const buildNavigationRow = (page, maxPages) => {
           const row = new ActionRowBuilder();
-          if (page > 1) {
+          if (page > 1)
             row.addComponents(
               new ButtonBuilder()
                 .setCustomId("nav_prev")
                 .setLabel("◀ Anterior")
                 .setStyle(ButtonStyle.Primary),
             );
-          }
-          if (maxPages > 2) {
+          if (maxPages > 2)
             row.addComponents(
               new ButtonBuilder()
                 .setCustomId("nav_jump")
@@ -186,15 +285,13 @@ module.exports = {
                 .setStyle(ButtonStyle.Secondary)
                 .setEmoji("📄"),
             );
-          }
-          if (page < maxPages) {
+          if (page < maxPages)
             row.addComponents(
               new ButtonBuilder()
                 .setCustomId("nav_next")
                 .setLabel("Siguiente ▶")
                 .setStyle(ButtonStyle.Primary),
             );
-          }
           return row;
         };
 
@@ -211,7 +308,7 @@ module.exports = {
 
           const mainEmbed = new EmbedBuilder()
             .setColor(0xf1c40f)
-            .setTitle(`💎 Favoritos de ${targetUser.username}`)
+            .setTitle(`💎 Favoritos de ${targetUser.displayName}`)
             .setDescription(`**Página ${page}/${maxPages}**\n\n${desc}`)
             .setURL(fakeUrl)
             .setImage(getCardImageUrl(pageItems[0].artworks));
@@ -243,18 +340,15 @@ module.exports = {
         collector.on("collect", async (i) => {
           if (i.isModalSubmit()) return;
 
-          // --- SALTO DE PÁGINA ---
           if (i.customId === "nav_jump") {
             const modal = new ModalBuilder()
               .setCustomId("modal_jump_page")
               .setTitle("Saltar a Página");
-
             const pageInput = new TextInputBuilder()
               .setCustomId("input_page")
               .setLabel(`Página (1 - ${totalPages})`)
               .setStyle(TextInputStyle.Short)
               .setRequired(true);
-
             modal.addComponents(
               new ActionRowBuilder().addComponents(pageInput),
             );
@@ -267,23 +361,16 @@ module.exports = {
                   m.user.id === interaction.user.id &&
                   m.customId === "modal_jump_page",
               });
-
               const reqPage = parseInt(
                 submitted.fields.getTextInputValue("input_page"),
               );
-              if (isNaN(reqPage) || reqPage < 1 || reqPage > totalPages) {
-                return submitted.reply({
-                  content: `❌ Página inválida. Debe ser un número entre 1 y ${totalPages}.`,
-                  ephemeral: true,
-                });
-              }
 
-              if (!ActionManager.lockUser(submitted.user.id)) {
+              if (isNaN(reqPage) || reqPage < 1 || reqPage > totalPages)
                 return submitted.reply({
-                  content: "⏳ Procesando tu acción...",
+                  content: `❌ Página inválida.`,
                   ephemeral: true,
                 });
-              }
+              if (!ActionManager.lockUser(i.user.id)) return;
 
               try {
                 currentPage = reqPage;
@@ -299,15 +386,8 @@ module.exports = {
             return;
           }
 
-          // --- PAGINACIÓN NORMAL ---
           await i.deferUpdate();
-
-          if (!ActionManager.lockUser(i.user.id)) {
-            return i.followUp({
-              content: "⏳ Procesando tu acción, por favor espera...",
-              ephemeral: true,
-            });
-          }
+          if (!ActionManager.lockUser(i.user.id)) return;
 
           try {
             const disabledRows = i.message.components.map((row) => {

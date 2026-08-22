@@ -3,123 +3,153 @@ const economy = require("./economy");
 
 class MedalsService {
   async evaluateAndGetMedals(playerId) {
-    // 1. Obtener todas las medallas del juego
     const { data: allMedals } = await supabase
       .from("medals")
       .select("*")
-      .order("condition_value", { ascending: true });
+      .order("series_slug", { ascending: true })
+      .order("tier", { ascending: true });
 
-    // 2. Obtener las medallas que el jugador YA tiene guardadas
     const { data: playerMedals } = await supabase
       .from("player_medals")
-      .select("medal_id")
+      .select("medal_id, is_claimed")
       .eq("player_id", playerId);
 
-    const unlockedIds = new Set(playerMedals?.map((pm) => pm.medal_id) || []);
+    const unlockedMap = new Map();
+    playerMedals?.forEach((pm) => unlockedMap.set(pm.medal_id, pm));
 
-    // 3. Consultar las estadísticas actuales del jugador para evaluar su progreso
     const player = await economy.getPlayer(playerId);
+    if (!player) throw new Error("Jugador no encontrado.");
 
-    // Total de cartas obtenidas (para medallas tipo 'count')
-    const { count: totalArtworks } = await supabase
-      .from("player_artworks")
-      .select("*", { count: "exact", head: true })
-      .eq("player_id", playerId);
-
-    // Total de cartas en galería
-    const { count: galleryCount } = await supabase
-      .from("player_artworks")
-      .select("*", { count: "exact", head: true })
-      .eq("player_id", playerId)
-      .eq("is_in_gallery", true);
-
-    // Rarezas obtenidas (para medallas tipo 'rarity')
-    const { data: raritiesData } = await supabase
-      .from("player_artworks")
-      .select("artworks!inner(rarity)")
-      .eq("player_id", playerId);
-    const ownedRarities = new Set(
-      raritiesData?.map((pa) => pa.artworks.rarity) || [],
-    );
-
-    // 🛠️ DICCIONARIO DE PROGRESO ADAPTADO A TUS DATOS REALES
     const getProgress = (medal) => {
-      if (medal.condition_type === "count") {
-        if (medal.slug === "master_gallery") return galleryCount || 0;
-        return totalArtworks || 0; // collector_10, collector_100, first_steps
+      switch (medal.condition_type) {
+        case "packs_opened":
+          return player.lifetime_packs_opened || 0;
+        case "casino_spent":
+          return player.casino_spent || 0;
+        case "highest_rarity":
+          return player.highest_rarity_unlocked || 0;
+        case "highest_level":
+          return player.highest_card_level || 1;
+        case "cards_evolved":
+          return player.total_cards_evolved || 0;
+        case "total_prestiges":
+          return player.total_prestiges || 0; // 🛠️ NUEVO TRACKER
+        case "ink_balance":
+          return player.ink_dollars || 0;
+        default:
+          return 0;
       }
-      if (medal.condition_type === "ink") return player?.ink_dollars || 0;
-      if (medal.condition_type === "rarity") {
-        if (medal.slug.includes("legendary") && ownedRarities.has("Legendary"))
-          return 1;
-        if (medal.slug.includes("celestial") && ownedRarities.has("Celestial"))
-          return 1;
-        return 0;
-      }
-      return 0;
     };
 
-    // 4. Evaluar cuáles medallas NUEVAS acaba de cumplir
     const newlyUnlocked = [];
-    for (const medal of allMedals) {
-      if (!unlockedIds.has(medal.id)) {
-        const progress = getProgress(medal);
-        if (progress >= medal.condition_value) {
-          newlyUnlocked.push({ player_id: playerId, medal_id: medal.id });
-          unlockedIds.add(medal.id); // Lo marcamos como desbloqueado en memoria
-        }
-      }
-    }
-
-    // 5. ¡Guardar las nuevas medallas en la base de datos!
-    if (newlyUnlocked.length > 0) {
-      await supabase.from("player_medals").insert(newlyUnlocked);
-    }
-
-    // 6. Lógica de "Series" (Agrupar medallas relacionadas)
-    // Agrupamos por el prefijo del slug (ej. 'collector_10' y 'collector_100' son de la serie 'collector')
-    const getSeries = (slug) => {
-      if (slug.startsWith("collector_")) return "collector";
-      if (slug.startsWith("rich_")) return "rich";
-      return slug; // Si no tiene serie, es una medalla independiente
-    };
-
+    const displayUnlocked = [];
+    const displayLocked = [];
     const seriesMap = new Map();
+
     for (const medal of allMedals) {
-      const series = getSeries(medal.slug);
+      const series = medal.series_slug || medal.slug;
       if (!seriesMap.has(series)) seriesMap.set(series, []);
       seriesMap.get(series).push(medal);
     }
 
-    const displayUnlocked = [];
-    const displayLocked = [];
-
-    // Iteramos sobre cada serie para extraer solo la más alta y la siguiente
     for (const [series, medalsInSeries] of seriesMap.entries()) {
-      medalsInSeries.sort((a, b) => a.condition_value - b.condition_value);
-
-      let highestUnlocked = null;
       let nextLocked = null;
 
       for (const medal of medalsInSeries) {
-        if (unlockedIds.has(medal.id)) {
-          highestUnlocked = medal;
-        } else if (!nextLocked) {
-          nextLocked = medal; // Solo atrapamos la primera bloqueada
+        const isUnlocked = unlockedMap.has(medal.id);
+        const isClaimed = isUnlocked
+          ? unlockedMap.get(medal.id).is_claimed
+          : false;
+        const progress = getProgress(medal);
+        const meetsCondition = progress >= medal.condition_value;
+
+        // 🛠️ REPARACIÓN: Si cumple la condición, empujamos TODAS las medallas que apliquen, sin sobreescribir.
+        if (meetsCondition) {
+          if (!isUnlocked) {
+            newlyUnlocked.push({
+              player_id: playerId,
+              medal_id: medal.id,
+              is_claimed: false,
+            });
+            unlockedMap.set(medal.id, {
+              medal_id: medal.id,
+              is_claimed: false,
+            });
+          }
+          medal.is_claimed = isClaimed;
+          displayUnlocked.push(medal);
+        }
+        // Si no cumple la condición, capturamos solo el primer Tier bloqueado para mostrarlo como meta
+        else if (!nextLocked) {
+          nextLocked = medal;
+          nextLocked.currentProgress = progress;
         }
       }
 
-      if (highestUnlocked) displayUnlocked.push(highestUnlocked);
       if (nextLocked) {
-        nextLocked.currentProgress = getProgress(nextLocked);
         displayLocked.push(nextLocked);
       }
+    }
+
+    if (newlyUnlocked.length > 0) {
+      await supabase.from("player_medals").insert(newlyUnlocked);
     }
 
     return {
       unlocked: displayUnlocked,
       locked: displayLocked,
       newlyUnlockedCount: newlyUnlocked.length,
+    };
+  }
+
+  async claimMedalReward(playerId, medalId) {
+    const { data: pm, error } = await supabase
+      .from("player_medals")
+      .select("is_claimed")
+      .eq("player_id", playerId)
+      .eq("medal_id", medalId)
+      .single();
+
+    if (error || !pm) throw new Error("No posees esta medalla.");
+    if (pm.is_claimed) throw new Error("Ya reclamaste esta recompensa.");
+
+    const { data: medal } = await supabase
+      .from("medals")
+      .select("*")
+      .eq("id", medalId)
+      .single();
+
+    if (medal.reward_ink > 0) await economy.addInk(playerId, medal.reward_ink);
+    if (medal.reward_dust > 0)
+      await economy.addStarDust(playerId, medal.reward_dust);
+
+    let cardAwarded = null;
+    if (medal.reward_card_id) {
+      const { data: newCard } = await supabase
+        .from("player_artworks")
+        .insert({
+          player_id: playerId,
+          artwork_id: medal.reward_card_id,
+          stars: 1,
+          level: 1,
+          invested_ink: 0,
+          invested_dust: 0,
+        })
+        .select("id")
+        .single();
+      cardAwarded = newCard?.id;
+    }
+
+    await supabase
+      .from("player_medals")
+      .update({ is_claimed: true })
+      .eq("player_id", playerId)
+      .eq("medal_id", medalId);
+
+    return {
+      ink: medal.reward_ink,
+      dust: medal.reward_dust,
+      cardId: cardAwarded,
     };
   }
 }

@@ -20,7 +20,9 @@ module.exports = {
 
     try {
       const targetUser =
-        interaction.options.getUser("usuario") || interaction.user;
+        interaction.options.getUser("usuario") ||
+        interaction.member ||
+        interaction.user;
       const player = await economy.getPlayer(targetUser.id);
 
       if (!player) {
@@ -38,7 +40,9 @@ module.exports = {
 
       const embed = new EmbedBuilder()
         .setColor(0x2ecc71) // Verde dinero
-        .setTitle(`🏭 Generadores de ${player.username || targetUser.username}`)
+        .setTitle(
+          `🏭 Generadores de ${targetUser.displayName || player.displayName}`,
+        )
         .setDescription(
           `Tu límite actual de producción simultánea es de **${player.generator_limit} cartas**.\n*Tus mejores cartas se asignan automáticamente a estos espacios.*\n\n`,
         );

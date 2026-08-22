@@ -52,9 +52,9 @@ module.exports = {
     try {
       await economy.getOrCreatePlayer(
         interaction.user.id,
-        interaction.user.username,
+        interaction.user.displayName,
       );
-      await economy.getOrCreatePlayer(targetUser.id, targetUser.username);
+      await economy.getOrCreatePlayer(targetUser.id, targetUser.displayName);
 
       const { trade, senderCard, receiverCard } =
         await tradeService.initiate1v1Trade(
@@ -80,7 +80,7 @@ module.exports = {
         .setColor(embedColor)
         .setTitle("🤝 ¡NUEVA OFERTA DE INTERCAMBIO!")
         .setDescription(
-          `**${interaction.user.username}** le ofrece a **${targetUser.username}** un intercambio.\n\n📤 **De ${interaction.user.username}:**\n${senderDesc}`,
+          `**${interaction.member?.displayName || interaction.user.displayName}** le ofrece a **${targetUser.displayName}** un intercambio.\n\n📤 **De ${interaction.member?.displayName || interaction.user.displayName}:**\n${senderDesc}`,
         )
         .setImage(
           senderIsGif
@@ -91,7 +91,7 @@ module.exports = {
       const embedReceiver = new EmbedBuilder()
         .setColor(embedColor)
         .setDescription(
-          `📥 **A cambio de la carta de ${targetUser.username}:**\n${receiverDesc}`,
+          `📥 **A cambio de la carta de ${targetUser.displayName}:**\n${receiverDesc}`,
         )
         .setImage(
           receiverIsGif
@@ -136,12 +136,7 @@ module.exports = {
         }
 
         // 🛠️ BLOQUEO ANTI-SPAM (Para ambas partes)
-        if (!ActionManager.lockUser(i.user.id)) {
-          return i.reply({
-            content: "⏳ Procesando respuesta...",
-            flags: MessageFlags.Ephemeral,
-          });
-        }
+        if (!ActionManager.lockUser(i.user.id)) return;
 
         try {
           // --- RECHAZAR ---
@@ -207,7 +202,7 @@ module.exports = {
                 .setColor(0x2ecc71)
                 .setTitle("✅ ¡Intercambio Completado!")
                 .setDescription(
-                  `**${interaction.user.username}** recibió: **${receiverCard.artworks.name}**\n**${targetUser.username}** recibió: **${senderCard.artworks.name}**`,
+                  `**${interaction.member?.displayName || interaction.user.displayName}** recibió: **${receiverCard.artworks.name}** (🆔${receiverCard.id})\n**${targetUser.displayName}** recibió: **${senderCard.artworks.name}** (🆔${senderCard.id})`,
                 );
 
               await interaction.editReply({
@@ -238,7 +233,7 @@ module.exports = {
               .setColor(0x95a5a6)
               .setTitle("⏳ Intercambio Expirado")
               .setDescription(
-                `La oferta de **${interaction.user.username}** fue cancelada por falta de respuesta.`,
+                `La oferta de **${interaction.member?.displayName || interaction.user.displayName}** fue cancelada por falta de respuesta.`,
               );
             await interaction.editReply({
               content: "",

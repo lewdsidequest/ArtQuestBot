@@ -14,17 +14,25 @@ function buildArtworkEmbed(artwork, options = {}) {
     showVideoText = false,
   } = options;
 
+  // 🛠️ ACTUALIZACIÓN: Leemos la rareza evolucionada (fallback a la base)
+  const currentRarityId = playerArtwork?.rarity_id || artwork.rarity_id;
+
   // Usamos el RarityManager para obtener los datos de la BD
-  const rarityData = RarityManager.get(artwork.rarity_id);
-  const colorHex = rarityData ? parseInt(rarityData.color_hex, 16) : 0x888888;
+  const rarityData = RarityManager.get(currentRarityId);
+  const colorHex = rarityData
+    ? parseInt(rarityData.color_hex.replace("#", ""), 16)
+    : 0x888888;
   const rarityName = rarityData ? rarityData.name : "Unknown";
   const rarityEmoji = rarityData ? rarityData.emoji : "";
 
   const uniqueId = playerArtwork ? playerArtwork.id : artwork.id || "N/A";
 
   const isVideo =
-    artwork.image_url && artwork.image_url.match(/\.(mp4|webm)$/i);
-  const isGif = artwork.image_url && artwork.image_url.match(/\.(gif)$/i);
+    artwork.is_video ??
+    (artwork.image_url && artwork.image_url.match(/\.(mp4|webm)$/i) !== null);
+  const isGif =
+    artwork.is_gif ??
+    (artwork.image_url && artwork.image_url.match(/\.(gif)$/i) !== null);
 
   let displayImageUrl = artwork.sample_url;
   if (isGif) displayImageUrl = artwork.image_url;
@@ -93,7 +101,6 @@ function buildArtworkEmbed(artwork, options = {}) {
 /**
  * Build a profile/stats embed.
  */
-// Añadimos targetUser como segundo parámetro
 function buildProfileEmbed(
   player,
   targetUser,
@@ -104,7 +111,6 @@ function buildProfileEmbed(
 ) {
   const RarityManager = require("./rarity");
 
-  // Establecer el color. Si tiene carta amada, usamos rosa. Si no, verde.
   const isLoved = bestCard && bestCard.is_loved;
   const embedColor = isLoved ? 0xff1493 : 0x2ecc71;
   const profileTitle = `🎨 Perfil de Galería de ${player.username || "Jugador"}`;
@@ -149,21 +155,18 @@ function buildProfileEmbed(
       text: `ID: ${player.id} | Registrado desde ${new Date(player.joined_at).toLocaleDateString()}`,
     });
 
-  // Si enviamos una carta destacada, la añadimos
   if (bestCard) {
     const featuredTitle = isLoved ? "💖 Carta Amada" : "🏆 Mejor Carta";
 
-    // Aprovechamos nuestro nuevo formateador minimalista para los detalles
     const { formatCardText } = require("./cardFormat");
+    // El formateador ya maneja internamente la rareza evolucionada
     const bestCardDesc = formatCardText(bestCard, "minimalist");
 
-    // Añadimos el aviso de video si aplica
     const isVideo =
-      bestCard.artworks.image_url &&
-      bestCard.artworks.image_url.match(/\.(mp4|webm)$/i);
+      bestCard.artworks.is_video ??
+      (bestCard.artworks.image_url &&
+        bestCard.artworks.image_url.match(/\.(mp4|webm)$/i) !== null);
     const videoNotice = isVideo ? "\n🎥 *(Video/Animación: Usa /view)*" : "";
-
-    // Agregamos el tip si no es una carta amada
     const loveTip = !isLoved ? "\n*(Usa `/love` para destacar una carta)*" : "";
 
     embed.addFields({
@@ -172,10 +175,17 @@ function buildProfileEmbed(
       inline: false,
     });
 
-    embed.setImage(bestCard.artworks.sample_url || bestCard.artworks.image_url);
+    const isGif =
+      bestCard.artworks.is_gif ??
+      (bestCard.artworks.image_url &&
+        bestCard.artworks.image_url.match(/\.(gif)$/i) !== null);
+    embed.setImage(
+      isGif
+        ? bestCard.artworks.image_url
+        : bestCard.artworks.sample_url || bestCard.artworks.image_url,
+    );
   }
 
-  // Agregamos las medallas
   if (medalsText) {
     embed.addFields({
       name: "🏅 Top 5 Medallas",
@@ -201,16 +211,14 @@ function buildPackEmbed(collection, cost) {
 
   let desc = `${priceText}\n\n¡Abre el sobre para revelar tu artwork!`;
 
-  // 🛠️ Añadimos los tags debajo de la instrucción si existen
   if (collection.content_tags) {
     desc += `\n\n🏷️ **Contenido:**\n*${collection.content_tags}*`;
   }
 
   embed.setDescription(desc);
-
   if (collection.pack_image_url) embed.setImage(collection.pack_image_url);
-
   embed.setFooter({ text: "Las probabilidades están en /info" });
+
   return embed;
 }
 

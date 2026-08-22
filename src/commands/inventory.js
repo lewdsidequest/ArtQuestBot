@@ -10,13 +10,13 @@ const {
   TextInputStyle,
   MessageFlags,
 } = require("discord.js");
+const supabase = require("../database/supabase"); // 🛠️ Requerido para actualizar favoritos
 const economy = require("../services/economy");
 const gallery = require("../services/gallery");
 const { buildArtworkEmbed } = require("../utils/embeds");
 const { formatCardText } = require("../utils/cardFormat");
-const ActionManager = require("../utils/ActionManager"); // 🛠️ Importamos el gestor anti-spam
+const ActionManager = require("../utils/ActionManager");
 
-// 🛠️ Helper para seleccionar la URL correcta según si es GIF o imagen/video
 const getCardImageUrl = (art) => {
   const isGif = art.is_gif ?? /\.(gif)$/i.test(art.image_url);
   return isGif ? art.image_url : art.sample_url || art.image_url;
@@ -103,15 +103,28 @@ module.exports = {
       const sub = interaction.options.getSubcommand();
       const targetUser =
         interaction.options.getUser("usuario") || interaction.user;
+      const targetMember =
+        interaction.options.getMember("usuario") || interaction.member;
+      const targetName = targetMember?.displayName || targetUser.displayName;
       const sortBy = interaction.options.getString("orden") || "recent";
 
       let currentPage = 1;
       let perPage = sub === "list" ? 10 : sub === "binder" ? 4 : 1;
+      let currentItems = [];
+      let currentTotal = 0;
 
-      await economy.getOrCreatePlayer(targetUser.id, targetUser.username);
+      await economy.getOrCreatePlayer(targetUser.id, targetUser.displayName);
 
       const fetchPage = async (page) => {
-        return await gallery.getInventory(targetUser.id, page, perPage, sortBy);
+        const result = await gallery.getInventory(
+          targetUser.id,
+          page,
+          perPage,
+          sortBy,
+        );
+        currentItems = result.items;
+        currentTotal = result.total;
+        return result;
       };
 
       const buildNavigationRow = (
@@ -119,6 +132,8 @@ module.exports = {
         maxPages,
         isViewMode = false,
         isVideoCard = false,
+        cardInfo = null,
+        isOwner = false,
       ) => {
         const row = new ActionRowBuilder();
 
@@ -151,6 +166,23 @@ module.exports = {
           );
         }
 
+        // 🛠️ Botón dinámico de Favorito (Solo se muestra en el modo "view" y si le pertenece a quien usó el comando)
+        if (isViewMode && isOwner && cardInfo) {
+          row.addComponents(
+            new ButtonBuilder()
+              .setCustomId("inv_fav_toggle")
+              .setLabel(
+                cardInfo.is_favorite ? "Quitar Favorito" : "Hacer Favorito",
+              )
+              .setStyle(
+                cardInfo.is_favorite
+                  ? ButtonStyle.Secondary
+                  : ButtonStyle.Success,
+              )
+              .setEmoji("💎"),
+          );
+        }
+
         if (page < maxPages) {
           row.addComponents(
             new ButtonBuilder()
@@ -163,18 +195,17 @@ module.exports = {
         return row;
       };
 
-      const { items: initialItems, total: initialTotal } =
-        await fetchPage(currentPage);
+      await fetchPage(currentPage);
 
-      if (!initialItems.length) {
+      if (!currentItems.length) {
         const msg =
           targetUser.id === interaction.user.id
             ? "Tu inventario está vacío. ¡Abre un sobre con `/pack`!"
-            : `El inventario de **${targetUser.username}** está vacío.`;
+            : `El inventario de **${targetName}** está vacío.`;
         return interaction.editReply({ content: msg });
       }
 
-      let totalPages = Math.max(1, Math.ceil(initialTotal / perPage));
+      let totalPages = Math.max(1, Math.ceil(currentTotal / perPage));
 
       const renderContent = (pageItems, page, maxPages, totalItems) => {
         const payload = { content: "", embeds: [], components: [] };
@@ -189,7 +220,7 @@ module.exports = {
 
           const embed = new EmbedBuilder()
             .setColor(0x9b59b6)
-            .setTitle(`🎒 Inventario de ${targetUser.username}`)
+            .setTitle(`🎒 Inventario de ${targetName}`)
             .setDescription(desc)
             .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
             .setFooter({
@@ -205,15 +236,12 @@ module.exports = {
 
           const embed = buildArtworkEmbed(art, {
             playerArtwork: item,
-            ownerUsername: targetUser.username,
+            ownerUsername: targetName,
             collectionName: art.collections?.name || "Desconocida",
             showVideoText: isVid ? true : false,
           });
 
-          // 🛠️ Ajuste de URL si es GIF animado
-          if (isGif) {
-            embed.setImage(art.image_url);
-          }
+          if (isGif) embed.setImage(art.image_url);
 
           let counterText = `📦 **Carta ${page} de ${maxPages}** — (${totalItems} en total) | Orden: ${sortBy}`;
           if (isGif)
@@ -226,7 +254,14 @@ module.exports = {
 
           payload.embeds.push(embed, counterEmbed);
           payload.components.push(
-            buildNavigationRow(page, maxPages, true, isVid),
+            buildNavigationRow(
+              page,
+              maxPages,
+              true,
+              isVid,
+              item,
+              targetUser.id === interaction.user.id,
+            ),
           );
           return payload;
         } else if (sub === "binder") {
@@ -239,7 +274,7 @@ module.exports = {
 
           const mainEmbed = new EmbedBuilder()
             .setColor(0x3498db)
-            .setTitle(`📁 Álbum de ${targetUser.username}`)
+            .setTitle(`📁 Álbum de ${targetName}`)
             .setDescription(
               `**Página ${page}/${maxPages}** | Orden: ${sortBy}\n\n${desc}`,
             )
@@ -263,7 +298,7 @@ module.exports = {
       };
 
       const msg = await interaction.editReply(
-        renderContent(initialItems, currentPage, totalPages, initialTotal),
+        renderContent(currentItems, currentPage, totalPages, currentTotal),
       );
 
       const collector = msg.createMessageComponentCollector({
@@ -279,13 +314,11 @@ module.exports = {
           const modal = new ModalBuilder()
             .setCustomId("modal_jump_page")
             .setTitle("Saltar a Página");
-
           const pageInput = new TextInputBuilder()
             .setCustomId("input_page")
             .setLabel(`Página (1 - ${totalPages})`)
             .setStyle(TextInputStyle.Short)
             .setRequired(true);
-
           modal.addComponents(new ActionRowBuilder().addComponents(pageInput));
           await i.showModal(modal);
 
@@ -308,20 +341,18 @@ module.exports = {
               return;
             }
 
-            if (!ActionManager.lockUser(submitted.user.id)) {
-              await submitted.reply({
-                content: "⏳ Procesando tu acción, por favor espera...",
-                flags: MessageFlags.Ephemeral,
-              });
-              return;
-            }
+            if (!ActionManager.lockUser(i.user.id)) return;
 
             try {
               currentPage = reqPage;
-              const { items: newItems, total: newTotal } =
-                await fetchPage(currentPage);
+              await fetchPage(currentPage);
               await submitted.update(
-                renderContent(newItems, currentPage, totalPages, newTotal),
+                renderContent(
+                  currentItems,
+                  currentPage,
+                  totalPages,
+                  currentTotal,
+                ),
               );
               collector.resetTimer();
             } finally {
@@ -331,23 +362,44 @@ module.exports = {
           return;
         }
 
-        // --- BOTONES DE NAVEGACIÓN ESTÁNDAR ---
+        // --- BOTONES ESTÁNDAR ---
         await i.deferUpdate();
 
-        if (!ActionManager.lockUser(i.user.id)) {
-          return i.followUp({
-            content: "⏳ Procesando tu acción, por favor espera...",
-            flags: MessageFlags.Ephemeral,
-          });
-        }
+        if (!ActionManager.lockUser(i.user.id)) return;
 
         try {
-          // Deshabilitar botones temporalmente durante el fetch
+          // --- TOGGLE FAVORITO (Solo disponible en View mode) ---
+          if (i.customId === "inv_fav_toggle") {
+            const card = currentItems[0];
+            const newState = !card.is_favorite;
+
+            const { error: updErr } = await supabase
+              .from("player_artworks")
+              .update({ is_favorite: newState })
+              .eq("id", card.id);
+
+            if (!updErr) {
+              card.is_favorite = newState; // 🛠️ Actualizamos en memoria
+              // 🛠️ Volvemos a renderizar en vivo
+              await interaction.editReply(
+                renderContent(
+                  currentItems,
+                  currentPage,
+                  totalPages,
+                  currentTotal,
+                ),
+              );
+            }
+            collector.resetTimer();
+            return; // Detenemos aquí para no deshabilitar los botones de paginación
+          }
+
+          // Deshabilitar navegación mientras carga
           const disabledRows = i.message.components.map((row) => {
             const newRow = new ActionRowBuilder();
-            row.components.forEach((btn) => {
-              newRow.addComponents(ButtonBuilder.from(btn).setDisabled(true));
-            });
+            row.components.forEach((btn) =>
+              newRow.addComponents(ButtonBuilder.from(btn).setDisabled(true)),
+            );
             return newRow;
           });
           await interaction.editReply({ components: disabledRows });
@@ -356,17 +408,20 @@ module.exports = {
             if (i.customId === "nav_prev") currentPage--;
             if (i.customId === "nav_next") currentPage++;
 
-            const { items: newItems, total: newTotal } =
-              await fetchPage(currentPage);
-            totalPages = Math.max(1, Math.ceil(newTotal / perPage));
+            await fetchPage(currentPage);
+            totalPages = Math.max(1, Math.ceil(currentTotal / perPage));
             await interaction.editReply(
-              renderContent(newItems, currentPage, totalPages, newTotal),
+              renderContent(
+                currentItems,
+                currentPage,
+                totalPages,
+                currentTotal,
+              ),
             );
             collector.resetTimer();
           }
 
           if (i.customId === "nav_video") {
-            const { items: currentItems } = await fetchPage(currentPage);
             const card = currentItems[0];
             const rawVideoUrl = card.artworks.image_url;
             const headerInfo = `🎥 ` + formatCardText(card, "minimalist");

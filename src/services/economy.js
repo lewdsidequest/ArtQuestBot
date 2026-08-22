@@ -4,7 +4,7 @@ class EconomyService {
   /**
    * Register or get existing player.
    */
-  async getOrCreatePlayer(discordId, username) {
+  async getOrCreatePlayer(discordId, globalDisplayName) {
     const { data, error } = await supabase
       .from("players")
       .select("*")
@@ -15,7 +15,20 @@ class EconomyService {
       throw new Error(`DB error: ${error.message}`);
     }
 
-    if (data) return data;
+    if (data) {
+      // 🛠️ ACTUALIZACIÓN DINÁMICA: Si el jugador cambió su Display Name Global en Discord,
+      // lo actualizamos en la base de datos para que los Embeds siempre muestren el actual.
+      if (data.username !== globalDisplayName && globalDisplayName) {
+        // Lo actualizamos en segundo plano sin detener la ejecución de la función
+        supabase
+          .from("players")
+          .update({ username: globalDisplayName })
+          .eq("id", discordId)
+          .then();
+        data.username = globalDisplayName; // Actualizamos el objeto en memoria
+      }
+      return data;
+    }
 
     // Leer configuración global desde la base de datos
     const { data: configData } = await supabase
@@ -39,7 +52,7 @@ class EconomyService {
       .from("players")
       .insert({
         id: discordId,
-        username: username || "Unknown",
+        username: globalDisplayName || "Unknown", // 🛠️ Usamos el Display Name aquí al crear la cuenta
         ink_dollars: stats.ink_dollars,
         star_dust: stats.star_dust,
         generator_limit: stats.generator_limit,
@@ -217,17 +230,15 @@ class EconomyService {
   /**
    * Obtiene la lista detallada de las cartas que están generando dinero.
    */
-  /**
-   * Obtiene la lista detallada de las cartas que están generando dinero.
-   */
   async getTopGeneratorsDetails(discordId) {
     const player = await this.getPlayer(discordId);
     if (!player) return [];
 
+    // 🛠️ ACTUALIZACIÓN: Incluimos el rarity_id del player_artworks
     const { data: paData } = await supabase
       .from("player_artworks")
       .select(
-        "id, level, stars, prestige_level, artworks!inner(name, rarity_id, collection_id)",
+        "id, rarity_id, level, stars, prestige_level, artworks!inner(name, rarity_id, collection_id)",
       )
       .eq("player_id", discordId)
       .eq("artworks.status", "active");
@@ -252,10 +263,14 @@ class EconomyService {
     }
 
     const { calculateInkRate } = require("../utils/power");
+
     const enriched = paData.map((pa) => {
+      // 🛠️ ECONOMÍA: Identificamos si la carta fue evolucionada para su tarifa
+      const activeRarityId = pa.rarity_id || pa.artworks.rarity_id;
+
       const baseRate =
-        rcMap[`${pa.artworks.collection_id}_${pa.artworks.rarity_id}`] || 0;
-      // 🛠️ Se pasa el prestige_level a la función matemática
+        rcMap[`${pa.artworks.collection_id}_${activeRarityId}`] || 0;
+
       const rate = calculateInkRate(
         baseRate,
         pa.stars,
@@ -268,6 +283,24 @@ class EconomyService {
 
     enriched.sort((a, b) => b.rate - a.rate);
     return enriched.slice(0, player.generator_limit);
+  }
+
+  /**
+   * 🛠️ NUEVO: Suma el dinero gastado en el casino (Slots o Gacha)
+   */
+  async addCasinoSpent(discordId, amount) {
+    const { data: player } = await supabase
+      .from("players")
+      .select("casino_spent")
+      .eq("id", discordId)
+      .single();
+
+    if (!player) return;
+
+    await supabase
+      .from("players")
+      .update({ casino_spent: (player.casino_spent || 0) + amount })
+      .eq("id", discordId);
   }
 }
 

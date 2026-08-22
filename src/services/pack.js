@@ -42,6 +42,21 @@ class PackService {
 
     if (updErr)
       throw new Error(`Fallo al aplicar prestigio: ${updErr.message}`);
+
+    // 🛠️ MEDALLAS: Registrar historial de Prestigios (en segundo plano)
+    economy
+      .getPlayer(playerId)
+      .then((player) => {
+        if (player) {
+          supabase
+            .from("players")
+            .update({ total_prestiges: (player.total_prestiges || 0) + 1 })
+            .eq("id", playerId)
+            .then();
+        }
+      })
+      .catch(() => {});
+
     return { newPrestige, artwork: pa.artworks };
   }
 
@@ -53,8 +68,8 @@ class PackService {
       throw new Error("Esta colección no tiene configuraciones de rareza");
 
     const cost = this.calculatePackCost(collection);
-
     const playerCheck = await economy.getPlayer(playerId);
+
     if (!playerCheck || playerCheck.ink_dollars < cost.final)
       throw new Error("Fondos insuficientes");
 
@@ -71,7 +86,6 @@ class PackService {
       );
     }
 
-    // 🛠️ COBRAMOS PRIMERO PARA EVITAR EXPLOITS
     await economy.deductInk(playerId, cost.final);
 
     try {
@@ -121,7 +135,6 @@ class PackService {
         }
       }
 
-      // 🛠️ PROTECCIÓN: Si la carta sigue siendo null, abortamos para no crashear
       if (!artwork)
         throw new Error(
           "El bot estaba descargando imagenes de esta coleccion...\n**Intentalo de nuevo, porfavor \\:)**",
@@ -143,7 +156,7 @@ class PackService {
       const isDuplicate = existingOwnership && existingOwnership.length > 0;
       const isNewPersonal = !isDuplicate;
 
-      const initialPrestige = collection.tier || 0;
+      const initialPrestige = Math.min(collection.tier, 2) || 0;
 
       const { data: playerArtwork, error: insertError } = await supabase
         .from("player_artworks")
@@ -155,6 +168,7 @@ class PackService {
           prestige_level: initialPrestige,
           invested_ink: 0,
           invested_dust: 0,
+          rarity_id: rarityId,
         })
         .select()
         .single();
@@ -168,12 +182,20 @@ class PackService {
         await supabase
           .from("player_discoveries")
           .insert({ player_id: playerId, artwork_id: artwork.id });
+
+      // 🛠️ MEDALLAS: Actualizamos Récords Históricos
+      const currentHighestRarity = playerCheck.highest_rarity_unlocked || 0;
+      const newHighestRarity = Math.max(currentHighestRarity, rarityId);
+
       await supabase
         .from("players")
-        .update({ total_packs: playerCheck.total_packs + 1 })
+        .update({
+          total_packs: playerCheck.total_packs + 1,
+          lifetime_packs_opened: (playerCheck.lifetime_packs_opened || 0) + 1,
+          highest_rarity_unlocked: newHighestRarity,
+        })
         .eq("id", playerId);
 
-      // 🛠️ INCREMENTAMOS EL CONTADOR DE APERTURAS DE ESTA COLECCIÓN
       await supabase.rpc("increment_pack_opens", { col_id: collection.id });
 
       return {
@@ -186,7 +208,6 @@ class PackService {
         cost,
       };
     } catch (error) {
-      // 🛠️ SISTEMA DE REEMBOLSO: Si algo falló arriba, te devolvemos tu dinero
       await economy.addInk(playerId, cost.final);
       throw new Error(
         `Se te ha devuelto tu dinero.\n**Motivo:** ${error.message}`,
@@ -210,6 +231,7 @@ class PackService {
       .eq("id", playerArtworkId)
       .eq("player_id", playerId)
       .single();
+
     if (paErr || !pa) throw new Error("Artwork no encontrado.");
     if (targetLevel <= pa.level)
       throw new Error("El nivel objetivo debe ser mayor al actual.");
@@ -221,12 +243,12 @@ class PackService {
       .maybeSingle();
     const ecoConfig = configData?.value || null;
 
-    // Se inyecta pa.artworks.rarity_id en la 4ta posición
+    const rarityId = pa.rarity_id || pa.artworks.rarity_id;
     const cost = calculateLevelUpgradeCost(
       pa.level,
       targetLevel,
       pa.prestige_level || 0,
-      pa.artworks.rarity_id,
+      rarityId,
       ecoConfig,
     );
 
@@ -239,6 +261,20 @@ class PackService {
       .eq("id", playerArtworkId);
     if (updErr) throw new Error(`Fallo al subir de nivel: ${updErr.message}`);
 
+    // 🛠️ MEDALLAS: Actualizar récord histórico de nivel (en segundo plano)
+    economy
+      .getPlayer(playerId)
+      .then((player) => {
+        if (player && targetLevel > (player.highest_card_level || 0)) {
+          supabase
+            .from("players")
+            .update({ highest_card_level: targetLevel })
+            .eq("id", playerId)
+            .then();
+        }
+      })
+      .catch(() => {});
+
     return { newLevel: targetLevel, cost, artwork: pa.artworks };
   }
 
@@ -250,6 +286,7 @@ class PackService {
       .eq("id", playerArtworkId)
       .eq("player_id", playerId)
       .single();
+
     if (paErr || !pa) throw new Error("Artwork no encontrado.");
     if (targetStars <= pa.stars)
       throw new Error(
@@ -265,12 +302,12 @@ class PackService {
       .maybeSingle();
     const ecoConfig = configData?.value || null;
 
-    // 🛠️ CORREGIDO: Se inyecta pa.artworks.rarity_id en la 4ta posición
+    const rarityId = pa.rarity_id || pa.artworks.rarity_id;
     const cost = calculateStarUpgradeCost(
       pa.stars,
       targetStars,
       pa.prestige_level || 0,
-      pa.artworks.rarity_id,
+      rarityId,
       ecoConfig,
     );
 
@@ -311,11 +348,12 @@ class PackService {
       );
     if (pa.is_loved) throw new Error("No puedes destruir tu Carta Amada.");
 
+    const rarityId = pa.rarity_id || pa.artworks.rarity_id;
     const { calculateRefund } = require("../utils/power");
     const refund = calculateRefund(
       pa.invested_ink,
       pa.invested_dust,
-      pa.artworks.rarity_id,
+      rarityId,
       pa.prestige_level || 0,
       ecoConfig,
     );
@@ -326,8 +364,7 @@ class PackService {
     if (refund.refundedInk > 0)
       await economy.addInk(playerId, refund.refundedInk);
 
-    // 🛠️ Obtenemos el nombre para mostrarlo en el Embed del comando Destroy
-    const rarityData = RarityManager.get(pa.artworks.rarity_id);
+    const rarityData = RarityManager.get(rarityId);
     const rarityName = rarityData ? rarityData.name : "Unknown";
 
     return {
@@ -383,10 +420,11 @@ class PackService {
           continue;
 
         toDestroy.push(copy.id);
+        const rarityId = copy.rarity_id || copy.artworks.rarity_id;
         const refund = calculateRefund(
           copy.invested_ink,
           copy.invested_dust,
-          copy.artworks.rarity_id,
+          rarityId,
           copy.prestige_level || 0,
           ecoConfig,
         );
@@ -394,8 +432,7 @@ class PackService {
         totalDust += refund.refundedDust;
         totalInk += refund.refundedInk;
 
-        // 🛠️ Protección usando el peso de la base de datos (270 = Legendario o superior)
-        const rarityData = RarityManager.get(copy.artworks.rarity_id);
+        const rarityData = RarityManager.get(rarityId);
         if (rarityData && rarityData.weight_score >= 270) hasHighRarity = true;
       }
     }
@@ -412,11 +449,10 @@ class PackService {
   async getDestructibleAll(playerId) {
     const topGenerators = await economy.getTopGeneratorsDetails(playerId);
     const protectedIds = topGenerators.map((g) => g.id);
-
     const { data: allCards, error } = await supabase
       .from("player_artworks")
       .select(
-        "id, level, stars, prestige_level, invested_ink, invested_dust, is_loved, is_favorite, artworks!inner(rarity_id, status)",
+        "id, rarity_id, level, stars, prestige_level, invested_ink, invested_dust, is_loved, is_favorite, artworks!inner(rarity_id, status)",
       )
       .eq("player_id", playerId)
       .eq("artworks.status", "active")
@@ -442,10 +478,11 @@ class PackService {
       if (protectedIds.includes(card.id)) continue;
 
       toDestroy.push(card.id);
+      const rarityId = card.rarity_id || card.artworks.rarity_id;
       const refund = calculateRefund(
         card.invested_ink,
         card.invested_dust,
-        card.artworks.rarity_id,
+        rarityId,
         card.prestige_level || 0,
         ecoConfig,
       );
@@ -453,7 +490,7 @@ class PackService {
       totalDust += refund.refundedDust;
       totalInk += refund.refundedInk;
 
-      const rarityData = RarityManager.get(card.artworks.rarity_id);
+      const rarityData = RarityManager.get(rarityId);
       if (rarityData && rarityData.weight_score >= 270) hasHighRarity = true;
     }
 
@@ -483,30 +520,23 @@ class PackService {
     return { newDust, newInk };
   }
 
-  // Reemplaza toggleFavorite con esta nueva función:
   async setFavorites(playerId, artworkIds, isFavorite) {
     if (!artworkIds || artworkIds.length === 0)
       throw new Error("Debes proporcionar al menos un ID válido.");
 
-    // Traemos las cartas y el JOIN con artworks(*) para que el formatCardText funcione
     const { data: ownedCards, error: fetchErr } = await supabase
       .from("player_artworks")
       .select("*, artworks(*)")
       .in("id", artworkIds)
       .eq("player_id", playerId);
-
     if (fetchErr)
       throw new Error("Error al buscar las cartas en la base de datos.");
-
-    if (!ownedCards || ownedCards.length === 0) {
+    if (!ownedCards || ownedCards.length === 0)
       throw new Error(
         "No se encontraron cartas válidas con esos IDs en tu inventario.",
       );
-    }
 
     const validIds = ownedCards.map((c) => c.id);
-
-    // Actualizamos masivamente
     const { error: updErr } = await supabase
       .from("player_artworks")
       .update({ is_favorite: isFavorite })
@@ -515,8 +545,6 @@ class PackService {
 
     if (updErr)
       throw new Error("Error al actualizar los favoritos en la base de datos.");
-
-    // Inyectamos el nuevo estado en memoria para que el formato se muestre correcto
     return ownedCards.map((c) => ({ ...c, is_favorite: isFavorite }));
   }
 }

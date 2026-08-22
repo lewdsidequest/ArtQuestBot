@@ -14,7 +14,7 @@ module.exports = {
     try {
       const player = await economy.getOrCreatePlayer(
         interaction.user.id,
-        interaction.user.username,
+        interaction.user.displayName,
       );
 
       const inkRate = await economy.getInkRate(interaction.user.id);

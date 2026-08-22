@@ -5,12 +5,11 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
-  MessageFlags,
 } = require("discord.js");
 const gamblingService = require("../services/gambling");
 const economy = require("../services/economy");
 const RarityManager = require("../utils/rarity");
-const ActionManager = require("../utils/ActionManager"); // 🛠️ GESTOR ANTI-SPAM
+const ActionManager = require("../utils/ActionManager");
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -34,31 +33,45 @@ module.exports = {
       const machines = await gamblingService.getActiveMachines("gacha");
       const machine = machines.find((m) => m.id === machineId);
 
-      if (!machine) {
+      if (!machine)
         return interaction.editReply({
           content: "❌ Banner no encontrado o finalizado.",
         });
+
+      try {
+        await gamblingService.checkJackpotLimit(interaction.user.id, machine);
+      } catch (cooldownError) {
+        const limitEmbed = new EmbedBuilder()
+          .setColor(0xe74c3c)
+          .setDescription(
+            `❌ ${cooldownError.message.replace("esta máquina", `**${machine.name}**`)}`,
+          );
+
+        if (machine.config?.thumbnail_url)
+          limitEmbed.setThumbnail(machine.config.thumbnail_url);
+        return interaction.editReply({ embeds: [limitEmbed] });
       }
 
       const player = await economy.getOrCreatePlayer(
         interaction.user.id,
-        interaction.user.username,
+        interaction.user.displayName,
       );
       const costFormatted = machine.max_bet.toLocaleString();
+      const spentFormatted = (player.casino_spent || 0).toLocaleString();
 
       const initEmbed = new EmbedBuilder()
         .setColor(0x9b59b6)
         .setTitle(`🔮 ${machine.name}`)
         .setDescription(
-          `💳 **Saldo Actual:** **${player.ink_dollars.toLocaleString()} Ink$**\n\n` +
+          `💳 **Saldo Actual:** **${player.ink_dollars.toLocaleString()} Ink$**\n` +
+            // `💸 **Casino Gastado:** **${spentFormatted}**\n\n` +
             `¡Bienvenido al Banner Promocional!\n\n` +
             `🎯 Cada tirada tiene la posibilidad de otorgarte Ink Dollars como premio de consuelo o el premio mayor: ¡Una **Carta Exclusiva**!\n\n` +
             `💵 **Costo por Tirada:** ${costFormatted} Ink$`,
         );
 
-      if (machine.config?.thumbnail_url) {
+      if (machine.config?.thumbnail_url)
         initEmbed.setThumbnail(machine.config.thumbnail_url);
-      }
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -81,12 +94,11 @@ module.exports = {
 
       collector.on("collect", async (i) => {
         if (i.customId === "gacha_pull") {
-          if (!ActionManager.lockUser(interaction.user.id)) {
+          if (!ActionManager.lockUser(interaction.user.id))
             return i.reply({
               content: "⏳ Abriendo cápsula...",
-              flags: MessageFlags.Ephemeral,
+              ephemeral: true,
             });
-          }
 
           try {
             await i.deferUpdate();
@@ -117,6 +129,9 @@ module.exports = {
               machine.max_bet +
               result.inkWinnings
             ).toLocaleString();
+            const newSpent = (
+              (currentP.casino_spent || 0) + machine.max_bet
+            ).toLocaleString();
 
             const pullEmbed = new EmbedBuilder().setTitle(
               `Banner: ${machine.name}`,
@@ -138,14 +153,15 @@ module.exports = {
               pullEmbed.setColor(0x95a5a6);
             }
 
-            let desc = `💳 **Saldo Actual:** **${newBal} Ink$**\n\n`;
+            let desc = `💳 Saldo Actual: **${newBal} Ink$**\n`;
+            // desc += `💸 **Casino Gastado:** **${newSpent}** | ⏱️ Tiradas totales: **${result.pityCount}**\n\n`;
+            desc += `⏱️ Tiradas totales: **${result.pityCount}**\n\n`;
             desc += `Has abierto la cápsula... ${capsuleEmoji}\n\n`;
 
-            if (result.inkWinnings > 0) {
+            if (result.inkWinnings > 0)
               desc += `💸 Premio: **+${result.inkWinnings.toLocaleString()} Ink$**\n`;
-            } else if (!result.isJackpot) {
+            else if (!result.isJackpot)
               desc += `💨 La cápsula estaba vacía. ¡Suerte a la próxima!\n`;
-            }
 
             if (result.isJackpot && result.cardWon) {
               desc += `\n🎉 **¡¡OBTUVISTE UNA CARTA EXCLUSIVA!!** 🎉\n`;
@@ -154,15 +170,12 @@ module.exports = {
               const rarityDisplay = rarityData
                 ? `${rarityData.name} ${rarityData.emoji}`
                 : "Desconocida";
-
               desc += `🖼️ **${result.cardWon.name}** (${rarityDisplay})\n`;
 
-              if (result.isDuplicate) {
+              if (result.isDuplicate)
                 desc += `🔁 *(Es un duplicado, se ha guardado en tu inventario)*\n`;
-              }
               desc += `\n🔍 Usa \`/view ID:${result.cardWonPaId}\` para verla a detalle.`;
 
-              // 🛠️ LÓGICA DE GIF APLICADA A GACHA
               const isGif =
                 result.cardWon.is_gif ??
                 /\.(gif)$/i.test(result.cardWon.image_url);
@@ -183,11 +196,9 @@ module.exports = {
             await i.editReply({ embeds: [pullEmbed], components: [row] });
             collector.resetTimer();
           } catch (e) {
-            await i.editReply({
-              content: `❌ Error al tirar: ${e.message}`,
-              components: [],
-            });
-            collector.stop("error");
+            await i.followUp({ content: `❌ ${e.message}`, ephemeral: true });
+            await interaction.editReply({ components: [row] });
+            collector.resetTimer();
           } finally {
             ActionManager.unlockUser(interaction.user.id);
           }
@@ -207,14 +218,19 @@ module.exports = {
   async autocomplete(interaction) {
     try {
       const focused = interaction.options.getFocused();
+      // 🛠️ CORRECCIÓN: Convertimos a String y evitamos fallos si es null o un número
+      const searchStr = String(focused || "").toLowerCase();
+
       const machines = await gamblingService.getActiveMachines("gacha");
       const filtered = machines
-        .filter((m) => m.name.toLowerCase().includes(focused.toLowerCase()))
+        .filter((m) => m.name.toLowerCase().includes(searchStr))
         .slice(0, 25);
+
       await interaction.respond(
         filtered.map((m) => ({ name: m.name, value: m.id })),
       );
     } catch (e) {
+      console.error("[Gacha Autocomplete Error]", e);
       await interaction.respond([]);
     }
   },
